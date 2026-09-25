@@ -193,10 +193,16 @@ static const wchar_t* Classify(HWND hwnd, HWND self, const std::wstring& cls)
 
 // ------------------------------------------------------------- collecting ---
 
-static int SlotForMonitor(const std::vector<MonitorRec>& mons, HMONITOR h, int a, int b)
+int DestSlot(int slot, int count)
 {
-    if (a >= 0 && a < static_cast<int>(mons.size()) && mons[static_cast<size_t>(a)].handle == h) return 0;
-    if (b >= 0 && b < static_cast<int>(mons.size()) && mons[static_cast<size_t>(b)].handle == h) return 1;
+    if (count < 2 || slot < 0 || slot >= count) return -1;
+    return (slot - 1 + count) % count;   // one place to the left, wrapping
+}
+
+static int SlotForMonitor(const std::vector<MonitorRec>& mons, HMONITOR h)
+{
+    for (size_t i = 0; i < mons.size(); ++i)
+        if (mons[i].handle == h) return static_cast<int>(i);
     return -1;
 }
 
@@ -204,8 +210,6 @@ struct CollectCtx
 {
     HWND                           self     = nullptr;
     const std::vector<MonitorRec>* mons     = nullptr;
-    int                            slotA    = 0;
-    int                            slotB    = 1;
     POINT                          off      = { 0, 0 };
     std::vector<WindowRec>*        included = nullptr;
 
@@ -263,12 +267,14 @@ static BOOL CALLBACK CollectProc(HWND hwnd, LPARAM lp)
         effective = w.rect;
     }
 
-    HMONITOR  mon  = MonitorFromRect(&effective, MONITOR_DEFAULTTONEAREST);
-    const int slot = SlotForMonitor(*ctx->mons, mon, ctx->slotA, ctx->slotB);
-    if (slot < 0) { reject(L"on a display outside the swapped pair"); return TRUE; }
+    const int count = static_cast<int>(ctx->mons->size());
+    HMONITOR  mon   = MonitorFromRect(&effective, MONITOR_DEFAULTTONEAREST);
+    const int slot  = SlotForMonitor(*ctx->mons, mon);
+    const int dest  = DestSlot(slot, count);
+    if (slot < 0 || dest < 0) { reject(L"on an unrecognized display"); return TRUE; }
 
-    const MonitorRec& src = (*ctx->mons)[static_cast<size_t>(slot == 0 ? ctx->slotA : ctx->slotB)];
-    const MonitorRec& dst = (*ctx->mons)[static_cast<size_t>(slot == 0 ? ctx->slotB : ctx->slotA)];
+    const MonitorRec& src = (*ctx->mons)[static_cast<size_t>(slot)];
+    const MonitorRec& dst = (*ctx->mons)[static_cast<size_t>(dest)];
 
     // Exclusive-fullscreen signature: fills the monitor exactly and has neither a
     // caption nor a sizing frame. Games react badly to being moved; borderless
@@ -284,7 +290,7 @@ static BOOL CALLBACK CollectProc(HWND hwnd, LPARAM lp)
     }
 
     w.srcSlot = slot;
-    w.dstSlot = slot == 0 ? 1 : 0;
+    w.dstSlot = dest;
 
     if (w.state == WinState::Normal)
     {
@@ -354,21 +360,16 @@ bool ApplyOne(const WindowRec& w)
 
 // ------------------------------------------------------------- operations ---
 
-static bool Prepare(HWND self, std::vector<MonitorRec>& mons, int& slotA, int& slotB,
+static bool Prepare(HWND self, std::vector<MonitorRec>& mons,
                     std::vector<WindowRec>& plan,
                     std::vector<std::pair<std::wstring, std::wstring>>* excluded)
 {
     mons = EnumerateMonitors();
     if (mons.size() < 2) return false;
 
-    slotA = 0;
-    slotB = 1;
-
     CollectCtx ctx;
     ctx.self         = self;
     ctx.mons         = &mons;
-    ctx.slotA        = slotA;
-    ctx.slotB        = slotB;
     ctx.off          = WorkspaceOffset();
     ctx.included     = &plan;
     ctx.excluded     = excluded;
@@ -378,21 +379,28 @@ static bool Prepare(HWND self, std::vector<MonitorRec>& mons, int& slotA, int& s
     return true;
 }
 
-static void LogMonitors(const std::vector<MonitorRec>& mons, int slotA, int slotB)
+static void LogMonitors(const std::vector<MonitorRec>& mons)
 {
-    LogF(L"Displays: %zu", mons.size());
-    for (size_t i = 0; i < mons.size(); ++i)
+    const int count = static_cast<int>(mons.size());
+
+    LogF(L"Displays: %d (ordered left to right)", count);
+    for (int i = 0; i < count; ++i)
     {
-        const MonitorRec& m = mons[i];
-        const wchar_t* role = (static_cast<int>(i) == slotA) ? L"<- pair A"
-                            : (static_cast<int>(i) == slotB) ? L"<- pair B"
-                            : L"";
-        LogF(L"  [%zu] %s%s bounds=%s work=%s %s",
+        const MonitorRec& m    = mons[static_cast<size_t>(i)];
+        const int         dest = DestSlot(i, count);
+
+        wchar_t role[32] = L"";
+        if (dest >= 0) swprintf_s(role, L"windows -> [%d]", dest);
+
+        LogF(L"  [%d] %s%s bounds=%s work=%s %s",
              i, m.device.c_str(), m.primary ? L" (primary)" : L"",
              RectStr(m.bounds).c_str(), RectStr(m.work).c_str(), role);
     }
-    if (mons.size() > 2)
-        LogF(L"  note: more than two displays; swapping the two leftmost.");
+
+    if (count > 2)
+        LogF(L"  note: %d displays; everything rotates one place to the left, "
+             L"[0] wrapping around to [%d]. Press %d times to get back.",
+             count, count - 1, count);
 }
 
 static void LogPlanLine(const WindowRec& w, POINT off)
@@ -401,10 +409,8 @@ static void LogPlanLine(const WindowRec& w, POINT off)
                     ? w.rect
                     : WorkspaceToScreen(w.wp.rcNormalPosition, off);
 
-    LogF(L"  %-9s [%c->%c] %s -> %s  \"%s\"  [%s]",
-         StateName(w.state),
-         w.srcSlot == 0 ? L'A' : L'B',
-         w.dstSlot == 0 ? L'A' : L'B',
+    LogF(L"  %-9s [%d->%d] %s -> %s  \"%s\"  [%s]",
+         StateName(w.state), w.srcSlot, w.dstSlot,
          RectStr(from).c_str(),
          RectStr(w.targetRect).c_str(),
          w.title.c_str(), w.cls.c_str());
@@ -416,9 +422,8 @@ SwapResult PerformSwap(HWND self, bool dryRun)
 
     std::vector<MonitorRec> mons;
     std::vector<WindowRec>  plan;
-    int slotA = 0, slotB = 1;
 
-    if (!Prepare(self, mons, slotA, slotB, plan, nullptr))
+    if (!Prepare(self, mons, plan, nullptr))
     {
         res.monitors = static_cast<int>(mons.size());
         LogF(L"Only %d display(s) detected - nothing to swap.", res.monitors);
@@ -431,8 +436,8 @@ SwapResult PerformSwap(HWND self, bool dryRun)
     res.considered = static_cast<int>(plan.size());
 
     LogF(L"---- %s ----", dryRun ? L"dry run" : L"swap");
-    LogMonitors(mons, slotA, slotB);
-    LogF(L"Windows to swap: %d", res.considered);
+    LogMonitors(mons);
+    LogF(L"Windows to move: %d", res.considered);
 
     for (const WindowRec& w : plan)
         LogPlanLine(w, off);
@@ -456,7 +461,7 @@ SwapResult PerformSwap(HWND self, bool dryRun)
         }
     }
 
-    LogF(L"Swapped %d of %d window(s), %d failed.", res.moved, res.considered, res.failed);
+    LogF(L"Moved %d of %d window(s), %d failed.", res.moved, res.considered, res.failed);
     return res;
 }
 
@@ -465,12 +470,11 @@ void ListAll(HWND self)
     std::vector<MonitorRec> mons;
     std::vector<WindowRec>  plan;
     std::vector<std::pair<std::wstring, std::wstring>> excluded;
-    int slotA = 0, slotB = 1;
 
-    const bool ok = Prepare(self, mons, slotA, slotB, plan, &excluded);
+    const bool ok = Prepare(self, mons, plan, &excluded);
 
     LogF(L"---- list ----");
-    LogMonitors(mons, slotA, slotB);
+    LogMonitors(mons);
 
     if (!ok)
     {
@@ -518,7 +522,7 @@ int SelfTest()
 
     std::vector<MonitorRec> mons = EnumerateMonitors();
     LogF(L"---- self test ----");
-    LogMonitors(mons, 0, 1);
+    LogMonitors(mons);
 
     if (mons.size() < 2)
     {
@@ -526,9 +530,56 @@ int SelfTest()
         return 2;
     }
 
+    // 0. The rotation itself, checked for display counts this machine may not have.
+    //    Each must be a left rotation and, just as importantly, a permutation - if
+    //    two displays ever shared a destination the swap would not be reversible.
+    LogF(L"Rotation mapping:");
+    for (int n = 2; n <= 5; ++n)
+    {
+        std::wstring shown;
+        std::vector<int> hits(static_cast<size_t>(n), 0);
+        bool good = true;
+
+        for (int i = 0; i < n; ++i)
+        {
+            const int d = DestSlot(i, n);
+            wchar_t part[32];
+            swprintf_s(part, L"%d->%d ", i, d);
+            shown += part;
+
+            if (d != (i - 1 + n) % n) good = false;
+            else                      ++hits[static_cast<size_t>(d)];
+        }
+        for (int h : hits) if (h != 1) good = false;
+
+        // n rotations must land every display back on itself.
+        int cycled = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            int at = i;
+            for (int k = 0; k < n; ++k) at = DestSlot(at, n);
+            if (at == i) ++cycled;
+        }
+        if (cycled != n) good = false;
+
+        wchar_t msg[256];
+        swprintf_s(msg, L"%d displays: %s(cycle of %d)", n, shown.c_str(), n);
+        check(good, msg);
+    }
+
+    check(DestSlot(0, 2) == 1 && DestSlot(1, 2) == 0,
+          L"two displays still reduce to a plain swap");
+    check(DestSlot(-1, 3) < 0 && DestSlot(3, 3) < 0 && DestSlot(0, 1) < 0,
+          L"out-of-range slots and single-display setups are rejected");
+
+    // The window tests below follow the real rotation, so with three or more
+    // displays they exercise the wrap-around rather than a made-up pair.
     const MonitorRec& A = mons[0];
-    const MonitorRec& B = mons[1];
+    const MonitorRec& B = mons[static_cast<size_t>(DestSlot(0, static_cast<int>(mons.size())))];
     const POINT off = WorkspaceOffset();
+
+    LogF(L"Moving test windows from [0] %s to [%d] %s",
+         A.device.c_str(), DestSlot(0, static_cast<int>(mons.size())), B.device.c_str());
 
     // 1. Pure math: a round trip through both work areas must be the identity.
     LogF(L"Remap round-trip:");

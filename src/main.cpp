@@ -30,7 +30,7 @@ static void AddTrayIcon()
     nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon            = g_icon;
-    wcscpy_s(nid.szTip, L"WinSwapper - Ctrl+Alt+S swaps the two displays");
+    wcscpy_s(nid.szTip, L"WinSwapper - Ctrl+Alt+S rotates windows one display left");
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -68,7 +68,7 @@ static void DoSwap()
 
     if (r.monitors < 2)
     {
-        Balloon(L"Only one display detected - nothing to swap.", NIIF_WARNING);
+        Balloon(L"Only one display detected - nothing to rotate.", NIIF_WARNING);
         return;
     }
 
@@ -78,7 +78,7 @@ static void DoSwap()
     {
         wchar_t msg[256];
         swprintf_s(msg,
-                   L"Swapped %d window(s).\nSkipped %d - owned by an elevated process.",
+                   L"Moved %d window(s).\nSkipped %d - owned by an elevated process.",
                    r.moved, r.failed);
         Balloon(msg, NIIF_WARNING);
     }
@@ -93,12 +93,15 @@ static void ShowAbout()
 {
     wchar_t msg[768];
     swprintf_s(msg,
-               L"WinSwapper 1.0\n\n"
-               L"Swaps every ordinary window on one display with those on the other, "
-               L"keeping each window's size and its position within its display.\n\n"
+               L"WinSwapper 1.1\n\n"
+               L"Moves every ordinary window one display to the left, with the leftmost "
+               L"display wrapping around to the rightmost. Each window keeps its size and "
+               L"its position within its display.\n\n"
+               L"With two displays that is a straight swap, so pressing twice puts "
+               L"everything back; with N displays it takes N presses.\n\n"
                L"Hotkey: %s\n"
                L"Log: %s\n\n"
-               L"Command line: --list, --dry-run, --swap, --selftest",
+               L"Command line: --list, --dry-run, --rotate, --selftest",
                g_hotkeyOk ? L"Ctrl+Alt+S" : L"Ctrl+Alt+S (UNAVAILABLE - taken by another app)",
                LogFilePath());
     MessageBoxW(nullptr, msg, L"About WinSwapper", MB_OK | MB_ICONINFORMATION);
@@ -112,7 +115,7 @@ static void ShowMenu()
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
-    AppendMenuW(menu, MF_STRING, IDM_SWAP,  L"&Swap now\tCtrl+Alt+S");
+    AppendMenuW(menu, MF_STRING, IDM_SWAP,  L"&Rotate now\tCtrl+Alt+S");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_LOG,   L"Open &log");
     AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"&About");
@@ -187,12 +190,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static void PrintUsage()
 {
-    LogF(L"WinSwapper - swap windows between two displays.");
+    LogF(L"WinSwapper - rotate windows one display to the left.");
     LogF(L"");
-    LogF(L"  winswapper.exe             run in the notification area (Ctrl+Alt+S swaps)");
+    LogF(L"  winswapper.exe             run in the notification area (Ctrl+Alt+S rotates)");
     LogF(L"  winswapper.exe --list      show displays and every window, included or not");
-    LogF(L"  winswapper.exe --dry-run   compute the swap and print it, move nothing");
-    LogF(L"  winswapper.exe --swap      perform one swap and exit");
+    LogF(L"  winswapper.exe --dry-run   compute the rotation and print it, move nothing");
+    LogF(L"  winswapper.exe --rotate    perform one rotation and exit (--swap also works)");
     LogF(L"  winswapper.exe --selftest  verify the remap math and the window-move paths");
     LogF(L"");
     LogF(L"Log file: %s", LogFilePath());
@@ -214,7 +217,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
             const std::wstring a = argv[i];
             if      (a == L"--list")     doList     = true;
             else if (a == L"--dry-run")  doDry      = true;
-            else if (a == L"--swap")     doSwapOnce = true;
+            else if (a == L"--rotate")   doSwapOnce = true;
+            else if (a == L"--swap")     doSwapOnce = true;   // the pre-1.1 spelling
             else if (a == L"--selftest") doSelfTest = true;
             else if (a == L"--help" || a == L"-h" || a == L"/?") doHelp = true;
             else                         badArg     = true;
@@ -304,7 +308,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     {
         LogF(L"RegisterHotKey(Ctrl+Alt+S) failed, error %lu.", GetLastError());
         Balloon(L"Ctrl+Alt+S is already taken by another app.\n"
-                L"Use the tray menu to swap.", NIIF_WARNING);
+                L"Use the tray menu to rotate.", NIIF_WARNING);
     }
     else
     {

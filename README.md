@@ -1,10 +1,12 @@
 # WinSwapper
 
-A small Win32 tray utility. It waits for a global hotkey, and when fired it exchanges every
-ordinary application window on one display with those on the other — keeping each window's size
-and its position within its display.
+A small Win32 tray utility. It waits for a global hotkey, and when fired it moves every ordinary
+application window one display to the left — keeping each window's size and its position within
+its display. The leftmost display wraps around to the rightmost, so nothing is lost and no display
+ends up empty by accident.
 
-Press **Ctrl+Alt+S**. Press it again to put everything back.
+Press **Ctrl+Alt+S**. With two displays that is a straight swap, so pressing twice puts everything
+back; with *N* displays it takes *N* presses to complete the cycle.
 
 ## Build
 
@@ -24,8 +26,8 @@ properties in `winswapper.vcxproj`.
 
 ## Use
 
-Run with no arguments and it goes to the notification area. Right-click the icon for *Swap now*,
-*Open log*, *About* and *Exit*; double-click it to swap.
+Run with no arguments and it goes to the notification area. Right-click the icon for *Rotate now*,
+*Open log*, *About* and *Exit*; double-click it to rotate.
 
 There are also four command-line modes, which print to the console they were launched from and to
 the log:
@@ -34,43 +36,52 @@ the log:
 |---|---|
 | `winswapper.exe` | Run in the notification area (the normal way to use it) |
 | `winswapper.exe --list` | Show the displays and **every** top-level window, with the reason each one was included or excluded |
-| `winswapper.exe --dry-run` | Compute the whole swap and print it — moves nothing |
-| `winswapper.exe --swap` | Perform one swap and exit (bind this to anything you like) |
-| `winswapper.exe --selftest` | Verify the remap arithmetic and the three window-move paths |
+| `winswapper.exe --dry-run` | Compute the whole rotation and print it — moves nothing |
+| `winswapper.exe --rotate` | Perform one rotation and exit (bind this to anything you like) |
+| `winswapper.exe --selftest` | Verify the rotation mapping, the remap arithmetic and the three window-move paths |
+
+`--swap` is accepted as a synonym for `--rotate`, since that was its name before 1.1.
 
 The log is at `%LOCALAPPDATA%\WinSwapper\winswapper.log`.
 
 ## How it works
 
-**Choosing the two displays.** Displays are enumerated and sorted left-to-right. Device-name
-suffixes are *not* reliable display numbers — this machine reports `\\.\DISPLAY5` and
-`\\.\DISPLAY6` — so ordering is by geometry. With exactly two displays the swap is symmetric, so
-which one you call "1" makes no difference. With more than two, the two leftmost are swapped.
+**Ordering the displays.** Displays are enumerated and sorted left-to-right by their bounds.
+Device-name suffixes are *not* reliable display numbers — this machine reports `\\.\DISPLAY6`,
+`\\.\DISPLAY5` and `\\.\DISPLAY1` in left-to-right order — so ordering is by geometry alone.
 
-**Choosing the windows.** A window is swapped only if it is visible, unowned, not a tool window,
+**The rotation.** Windows on display *i* go to display *i* − 1, and display 0 wraps around to the
+last one. Every display takes part; there is no "unused" display. Because that mapping is a single
+cycle it is a permutation, so no two displays can ever collide on the same destination and the
+whole thing is reversible by completing the cycle. The self-test checks exactly that property for
+two through five displays, including that *N* rotations return every display to itself.
+
+With two displays the rotation degenerates to a swap, which is the original behaviour unchanged.
+
+**Choosing the windows.** A window is moved only if it is visible, unowned, not a tool window,
 not DWM-cloaked, not a shell window, and not exclusive-fullscreen. The cloak check is the one that
 matters most: without it, windows belonging to *other virtual desktops* would get hauled onto the
 current one.
 
 **Moving them.** Each window's rect is expressed as a fraction of its source display's work area
-and reapplied to the destination's, so layouts survive displays of different sizes. When the two
-work areas are the same size every scale factor is exactly 1.0, the mapping degenerates to an
-integer translation, and swapping twice restores every window to its original pixel.
+and reapplied to the destination's, so layouts survive displays of different sizes. When the work
+areas are all the same size every scale factor is exactly 1.0, the mapping degenerates to an
+integer translation, and a full cycle restores every window to its original pixel.
 
 A window that merely overhangs its display is left exactly where the arithmetic puts it — only one
 that would land completely off-screen is rescued. Nudging overhanging windows inward would fight
 the invisible resize border that `GetWindowRect` reports on Windows 10/11 and would quietly make
-each swap lossy instead of reversible.
+each rotation lossy instead of reversible.
 
 The three window states each need different treatment:
 
 - **Normal** — one `SetWindowPos` with `SWP_ASYNCWINDOWPOS`, so a hung application cannot stall
-  the rest of the swap.
+  the rest of the rotation.
 - **Maximized** — un-maximize, move, re-maximize. `SetWindowPlacement` alone does *not* work here:
   Windows leaves a maximized window on its current display and merely rewrites its restore rect.
   The self-test covers this.
 - **Minimized** — `SetWindowPlacement` with the remapped restore rect and `showCmd` left alone, so
-  the window stays minimized but reappears on the other display. `WPF_RESTORETOMAXIMIZED` is
+  the window stays minimized but reappears on its destination display. `WPF_RESTORETOMAXIMIZED` is
   preserved, so a window that was maximized before being minimized still restores maximized.
 
 ## Known limitations
@@ -85,8 +96,13 @@ The three window states each need different treatment:
 - **Re-maximizing activates.** Because a maximized window has to be restored and re-maximized,
   the last maximized window processed ends up focused, and there is a brief flash as it moves.
 - **Different DPI per display.** The app is Per-Monitor-V2 aware, so coordinates are real physical
-  pixels. If the two displays run different scaling factors, applications will re-layout their
-  contents on arrival, which the proportional mapping accounts for but cannot make invisible.
+  pixels. If displays run different scaling factors, applications will re-layout their contents on
+  arrival, which the proportional mapping accounts for but cannot make invisible.
+- **Rotation is one-directional.** There is one hotkey and it always rotates left. With three or
+  more displays, getting a window back one place to the right means completing the cycle. A second
+  hotkey for the other direction would be a small change — the mapping is a single function.
+- **Displays are matched by position, not identity.** Plugging in or unplugging a display changes
+  the ordering, so a rotation begun on one arrangement and finished on another will not round-trip.
 
 ## Layout
 
