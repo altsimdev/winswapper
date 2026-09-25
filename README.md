@@ -1,5 +1,7 @@
 # WinSwapper
 
+[![build](https://github.com/altsimdev/winswapper/actions/workflows/build.yml/badge.svg)](https://github.com/altsimdev/winswapper/actions/workflows/build.yml)
+
 A small Win32 tray utility. It waits for a global hotkey, and when fired it moves every ordinary
 application window one display to the left — keeping each window's size and its position within
 its display. The leftmost display wraps around to the rightmost, so nothing is lost and no display
@@ -21,10 +23,17 @@ The binary lands in `build\x64\Release\winswapper.exe`. It has no runtime depend
 Windows itself, and needs no installer — put it anywhere, or drop a shortcut in
 `shell:startup` to have it run at login.
 
-The project targets `PlatformToolset v145` (Visual Studio 2026) and Windows SDK `10.0.26100.0`. On
-an older Visual Studio or a different SDK, change `PlatformToolset` and
-`WindowsTargetPlatformVersion` in `winswapper.vcxproj` — nothing here depends on a recent toolset
-beyond C++17.
+The project does not pin a toolset or an SDK: it asks for `$(DefaultPlatformToolset)` and Windows
+SDK `10.0`, which resolve to whatever that machine has installed (`v145` on Visual Studio 2026,
+`v143` on 2022). Nothing here needs more than C++17. To pin an exact pair, pass them on the command
+line:
+
+```bash
+msbuild winswapper.sln /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.22621.0
+```
+
+`.github/workflows/build.yml` builds both configurations on `windows-latest` for every push and
+pull request, smoke-tests the binary, and uploads it as an artifact.
 
 ## Use
 

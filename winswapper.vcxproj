@@ -15,21 +15,27 @@
     <VCProjectVersion>18.0</VCProjectVersion>
     <ProjectGuid>{C28F0EAC-6745-4627-A6C7-FF9BA8566950}</ProjectGuid>
     <RootNamespace>winswapper</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <!-- "10.0" means the newest Windows 10/11 SDK installed, so this builds on a
+         machine or CI runner that has a different one. Override with
+         /p:WindowsTargetPlatformVersion=... to pin an exact SDK. -->
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == ''">10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
 
+  <!-- DefaultPlatformToolset is whatever the installed Visual Studio provides (v145
+       for 2026, v143 for 2022), so the project is not tied to one release. Nothing
+       here needs more than C++17. Override with /p:PlatformToolset=... to pin one. -->
   <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>

@@ -1,0 +1,61 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ["*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      # The project asks for $(DefaultPlatformToolset) and SDK "10.0" rather than
+      # pinning a version, so it picks up whatever Visual Studio the runner image
+      # ships. Printing them makes it obvious what a given run actually used.
+      - name: Report toolset
+        continue-on-error: true   # diagnostics only; -getProperty needs MSBuild 17.8+
+        run: |
+          msbuild winswapper.vcxproj `
+            /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 `
+            -getProperty:PlatformToolset -getProperty:WindowsTargetPlatformVersion
+
+      - name: Build
+        run: msbuild winswapper.sln /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /m
+
+      # winswapper.exe is a GUI-subsystem binary, so PowerShell does not wait for it
+      # on its own and $LASTEXITCODE would be whatever came before. Piping to Out-Null
+      # forces the wait. --help needs no displays, which matters because a runner has
+      # only one and the swap itself needs two.
+      - name: Smoke test
+        run: |
+          $exe = "build\x64\${{ matrix.configuration }}\winswapper.exe"
+          if (-not (Test-Path $exe)) { throw "no binary at $exe" }
+          & $exe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "--help exited $LASTEXITCODE" }
+          $v = (Get-Item $exe).VersionInfo
+          Write-Host "built $($v.FileDescription) $($v.FileVersion), $((Get-Item $exe).Length) bytes"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: winswapper-x64-${{ matrix.configuration }}
+          path: |
+            build/x64/${{ matrix.configuration }}/winswapper.exe
+            build/x64/${{ matrix.configuration }}/winswapper.pdb
+          if-no-files-found: error
