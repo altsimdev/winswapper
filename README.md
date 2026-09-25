@@ -35,6 +35,16 @@ msbuild winswapper.sln /p:Configuration=Release /p:Platform=x64 /p:PlatformTools
 `.github/workflows/build.yml` builds both configurations on `windows-latest` for every push and
 pull request, smoke-tests the binary, and uploads it as an artifact.
 
+## Releases
+
+Pushing a tag builds Release and attaches `winswapper-<tag>-x64.zip` to a GitHub release for that
+tag, alongside a `.sha256` checksum. The zip holds the executable, this README and the license —
+nothing to install.
+
+```bash
+sha256sum -c winswapper-1.01-x64.zip.sha256
+```
+
 ## Use
 
 Run with no arguments and it goes to the notification area. Right-click the icon for *Rotate now*,
