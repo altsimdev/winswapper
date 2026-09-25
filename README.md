@@ -10,19 +10,21 @@ back; with *N* displays it takes *N* presses to complete the cycle.
 
 ## Build
 
-Requires Visual Studio 2026 (v18) with the C++ workload. Open `winswapper.sln` and build, or from
-a shell:
+Requires Visual Studio with the "Desktop development with C++" workload. Open `winswapper.sln` and
+build, or from a Developer Command Prompt / Developer PowerShell:
 
 ```bash
-"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" winswapper.sln /p:Configuration=Release /p:Platform=x64
+msbuild winswapper.sln /p:Configuration=Release /p:Platform=x64
 ```
 
 The binary lands in `build\x64\Release\winswapper.exe`. It has no runtime dependencies beyond
 Windows itself, and needs no installer — put it anywhere, or drop a shortcut in
 `shell:startup` to have it run at login.
 
-Targets `PlatformToolset v145` and Windows SDK `10.0.26100.0`. To retarget, edit those two
-properties in `winswapper.vcxproj`.
+The project targets `PlatformToolset v145` (Visual Studio 2026) and Windows SDK `10.0.26100.0`. On
+an older Visual Studio or a different SDK, change `PlatformToolset` and
+`WindowsTargetPlatformVersion` in `winswapper.vcxproj` — nothing here depends on a recent toolset
+beyond C++17.
 
 ## Use
 
@@ -47,8 +49,9 @@ The log is at `%LOCALAPPDATA%\WinSwapper\winswapper.log`.
 ## How it works
 
 **Ordering the displays.** Displays are enumerated and sorted left-to-right by their bounds.
-Device-name suffixes are *not* reliable display numbers — this machine reports `\\.\DISPLAY6`,
-`\\.\DISPLAY5` and `\\.\DISPLAY1` in left-to-right order — so ordering is by geometry alone.
+Device-name suffixes are *not* reliable display numbers: a three-display machine can report them
+left-to-right as `\\.\DISPLAY6`, `\\.\DISPLAY5`, `\\.\DISPLAY1`. Ordering is therefore by geometry
+alone, and `--list` prints the order it settled on.
 
 **The rotation.** Windows on display *i* go to display *i* − 1, and display 0 wraps around to the
 last one. Every display takes part; there is no "unused" display. Because that mapping is a single
