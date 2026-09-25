@@ -116,3 +116,10 @@ src/log.cpp       log file plus console output for the command-line modes
 res/app.manifest  Per-Monitor-V2 DPI awareness, common controls v6, asInvoker
 res/make-icon.ps1 regenerates res/app.ico
 ```
+
+`res/app.ico` is committed so the build needs no extra tooling, and `res/make-icon.ps1` is the
+script that produced it — the icon is not an opaque binary you have to take on trust.
+
+## License
+
+BSD 2-Clause. See [LICENSE](LICENSE).
