@@ -1,0 +1,18 @@
+# Build output
+build/
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.res
+*.tlog
+*.idb
+*.iobj
+*.ipdb
+*.log
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.aps
