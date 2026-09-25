@@ -93,7 +93,7 @@ static void ShowAbout()
 {
     wchar_t msg[768];
     swprintf_s(msg,
-               L"WinSwapper 1.1\n\n"
+               L"WinSwapper 1.01\n\n"
                L"Moves every ordinary window one display to the left, with the leftmost "
                L"display wrapping around to the rightmost. Each window keeps its size and "
                L"its position within its display.\n\n"
@@ -218,7 +218,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
             if      (a == L"--list")     doList     = true;
             else if (a == L"--dry-run")  doDry      = true;
             else if (a == L"--rotate")   doSwapOnce = true;
-            else if (a == L"--swap")     doSwapOnce = true;   // the pre-1.1 spelling
+            else if (a == L"--swap")     doSwapOnce = true;   // the pre-1.01 spelling
             else if (a == L"--selftest") doSelfTest = true;
             else if (a == L"--help" || a == L"-h" || a == L"/?") doHelp = true;
             else                         badArg     = true;

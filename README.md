@@ -40,7 +40,7 @@ the log:
 | `winswapper.exe --rotate` | Perform one rotation and exit (bind this to anything you like) |
 | `winswapper.exe --selftest` | Verify the rotation mapping, the remap arithmetic and the three window-move paths |
 
-`--swap` is accepted as a synonym for `--rotate`, since that was its name before 1.1.
+`--swap` is accepted as a synonym for `--rotate`, since that was its name before 1.01.
 
 The log is at `%LOCALAPPDATA%\WinSwapper\winswapper.log`.
 
