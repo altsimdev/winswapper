@@ -40,16 +40,38 @@ jobs:
 
       # winswapper.exe is a GUI-subsystem binary, so PowerShell does not wait for it
       # on its own and $LASTEXITCODE would be whatever came before. Piping to Out-Null
-      # forces the wait. --help needs no displays, which matters because a runner has
-      # only one and the rotation needs two.
+      # forces the wait.
       - name: Smoke test
         run: |
           $exe = "build\x64\${{ matrix.configuration }}\winswapper.exe"
           if (-not (Test-Path $exe)) { throw "no binary at $exe" }
+
           & $exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "--help exited $LASTEXITCODE" }
+
+          # --selftest exits 0 when every check ran, 3 when it passed everything it
+          # could but skipped the window-move tests for want of a second display -
+          # which is always the case on a runner. 1 is a real failure and 2 a usage
+          # error, and both must fail the step. The rotation arithmetic is checked
+          # either way, so this is worth running here.
+          & $exe --selftest | Out-Null
+          $rc = $LASTEXITCODE
+
+          # The binary cannot write to this step's console, so its results only land
+          # in the log. Print it, or a failure would say "exited 1" and nothing about
+          # which check broke.
+          $log = Join-Path $env:LOCALAPPDATA "WinSwapper\winswapper.log"
+          if (Test-Path $log) { Get-Content $log }
+
+          if ($rc -eq 3) { Write-Host "note: window-move tests skipped (single-display runner)" }
+          elseif ($rc -ne 0) { throw "--selftest exited $rc" }
+
           $v = (Get-Item $exe).VersionInfo
           Write-Host "built $($v.FileDescription) $($v.FileVersion), $((Get-Item $exe).Length) bytes"
+
+          # GitHub's pwsh wrapper appends "exit $LASTEXITCODE", so the tolerated 3
+          # from --selftest would fail the step despite being handled above.
+          exit 0
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

@@ -3,12 +3,15 @@
 [![build](https://github.com/altsimdev/winswapper/actions/workflows/build.yml/badge.svg)](https://github.com/altsimdev/winswapper/actions/workflows/build.yml)
 
 A small Win32 tray utility. It waits for a global hotkey, and when fired it moves every ordinary
-application window one display to the left — keeping each window's size and its position within
-its display. The leftmost display wraps around to the rightmost, so nothing is lost and no display
-ends up empty by accident.
+application window one display sideways — keeping each window's size and its position within its
+display. The end display wraps around, so nothing is lost and no display ends up empty by accident.
 
-Press **Ctrl+Alt+S**. With two displays that is a straight swap, so pressing twice puts everything
-back; with *N* displays it takes *N* presses to complete the cycle.
+- **Ctrl+Alt+S** rotates left
+- **Ctrl+Alt+Shift+S** rotates right
+
+The two directions are inverses, so one of each puts everything back — to the exact pixel when the
+displays share a resolution, and to within a pixel or two of rounding when they don't. With two
+displays both do the same swap; with *N* displays, *N* presses the same way also completes the cycle.
 
 ## Build
 
@@ -47,8 +50,11 @@ sha256sum -c winswapper-1.01-x64.zip.sha256
 
 ## Use
 
-Run with no arguments and it goes to the notification area. Right-click the icon for *Rotate now*,
-*Open log*, *About* and *Exit*; double-click it to rotate.
+Run with no arguments and it goes to the notification area. Right-click the icon for *Rotate left*,
+*Rotate right*, *Open log*, *About* and *Exit*; double-click it to rotate left.
+
+The two hotkeys are registered independently, so if another application has claimed one of them the
+other still works — and the tray menu always does.
 
 There are also four command-line modes, which print to the console they were launched from and to
 the log:
@@ -61,7 +67,15 @@ the log:
 | `winswapper.exe --rotate` | Perform one rotation and exit (bind this to anything you like) |
 | `winswapper.exe --selftest` | Verify the rotation mapping, the remap arithmetic and the three window-move paths |
 
-`--swap` is accepted as a synonym for `--rotate`, since that was its name before 1.01.
+`--reverse` (or `--right`) added to `--rotate` or `--dry-run` rotates right instead of left. Those
+are the only modes it applies to; combined with anything else, or given alone, it is an error rather
+than being silently ignored. `--swap` is accepted as a synonym for `--rotate`, since that was its
+name before 1.01.
+
+`--selftest` exits 0 when every check ran and passed, 3 when it passed everything it could but
+skipped the window-move tests for want of a second display, and 1 on a real failure. Usage errors
+exit 2 in every mode. The rotation arithmetic is checked regardless of displays, which is why CI
+runs it on a single-display runner.
 
 The log is at `%LOCALAPPDATA%\WinSwapper\winswapper.log`.
 
@@ -72,13 +86,17 @@ Device-name suffixes are *not* reliable display numbers: a three-display machine
 left-to-right as `\\.\DISPLAY6`, `\\.\DISPLAY5`, `\\.\DISPLAY1`. Ordering is therefore by geometry
 alone, and `--list` prints the order it settled on.
 
-**The rotation.** Windows on display *i* go to display *i* − 1, and display 0 wraps around to the
-last one. Every display takes part; there is no "unused" display. Because that mapping is a single
-cycle it is a permutation, so no two displays can ever collide on the same destination and the
-whole thing is reversible by completing the cycle. The self-test checks exactly that property for
-two through five displays, including that *N* rotations return every display to itself.
+**The rotation.** Rotating left sends the windows on display *i* to display *i* − 1, with display 0
+wrapping around to the last one; rotating right is the same thing with the sign flipped. Every
+display takes part either way; there is no "unused" display.
 
-With two displays the rotation degenerates to a swap, which is the original behaviour unchanged.
+Because each mapping is a single cycle it is a permutation, so no two displays can ever collide on
+one destination, and the whole thing is reversible — either by completing the cycle or, more
+cheaply, by one rotation the other way. The self-test checks all of that for two through five
+displays: that each direction rotates the right way, that each is a permutation, that *N* rotations
+return every display to itself, and that left-then-right and right-then-left are both the identity.
+
+With two displays both directions are the same swap, which is the original behaviour unchanged.
 
 **Choosing the windows.** A window is moved only if it is visible, unowned, not a tool window,
 not DWM-cloaked, not a shell window, and not exclusive-fullscreen. The cloak check is the one that
@@ -120,11 +138,11 @@ The three window states each need different treatment:
 - **Different DPI per display.** The app is Per-Monitor-V2 aware, so coordinates are real physical
   pixels. If displays run different scaling factors, applications will re-layout their contents on
   arrival, which the proportional mapping accounts for but cannot make invisible.
-- **Rotation is one-directional.** There is one hotkey and it always rotates left. With three or
-  more displays, getting a window back one place to the right means completing the cycle. A second
-  hotkey for the other direction would be a small change — the mapping is a single function.
+- **The hotkeys are not configurable.** Ctrl+Alt+S and Ctrl+Alt+Shift+S are compiled in. If another
+  application owns one, the tray menu is the fallback.
 - **Displays are matched by position, not identity.** Plugging in or unplugging a display changes
   the ordering, so a rotation begun on one arrangement and finished on another will not round-trip.
+  This is why the two directions only cancel out while the display layout stays put.
 
 ## Layout
 

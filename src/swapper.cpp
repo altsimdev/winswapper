@@ -193,10 +193,19 @@ static const wchar_t* Classify(HWND hwnd, HWND self, const std::wstring& cls)
 
 // ------------------------------------------------------------- collecting ---
 
-int DestSlot(int slot, int count)
+int DestSlot(int slot, int count, Rotation dir)
 {
     if (count < 2 || slot < 0 || slot >= count) return -1;
-    return (slot - 1 + count) % count;   // one place to the left, wrapping
+
+    // The + count before the modulo keeps a left rotation off C++'s
+    // implementation-defined negative remainder.
+    const int step = (dir == Rotation::Left) ? -1 : 1;
+    return ((slot + step) % count + count) % count;
+}
+
+static const wchar_t* DirName(Rotation dir)
+{
+    return dir == Rotation::Left ? L"left" : L"right";
 }
 
 static int SlotForMonitor(const std::vector<MonitorRec>& mons, HMONITOR h)
@@ -210,6 +219,7 @@ struct CollectCtx
 {
     HWND                           self     = nullptr;
     const std::vector<MonitorRec>* mons     = nullptr;
+    Rotation                       dir      = Rotation::Left;
     POINT                          off      = { 0, 0 };
     std::vector<WindowRec>*        included = nullptr;
 
@@ -270,7 +280,7 @@ static BOOL CALLBACK CollectProc(HWND hwnd, LPARAM lp)
     const int count = static_cast<int>(ctx->mons->size());
     HMONITOR  mon   = MonitorFromRect(&effective, MONITOR_DEFAULTTONEAREST);
     const int slot  = SlotForMonitor(*ctx->mons, mon);
-    const int dest  = DestSlot(slot, count);
+    const int dest  = DestSlot(slot, count, ctx->dir);
     if (slot < 0 || dest < 0) { reject(L"on an unrecognized display"); return TRUE; }
 
     const MonitorRec& src = (*ctx->mons)[static_cast<size_t>(slot)];
@@ -360,7 +370,7 @@ bool ApplyOne(const WindowRec& w)
 
 // ------------------------------------------------------------- operations ---
 
-static bool Prepare(HWND self, std::vector<MonitorRec>& mons,
+static bool Prepare(HWND self, std::vector<MonitorRec>& mons, Rotation dir,
                     std::vector<WindowRec>& plan,
                     std::vector<std::pair<std::wstring, std::wstring>>* excluded)
 {
@@ -370,6 +380,7 @@ static bool Prepare(HWND self, std::vector<MonitorRec>& mons,
     CollectCtx ctx;
     ctx.self         = self;
     ctx.mons         = &mons;
+    ctx.dir          = dir;
     ctx.off          = WorkspaceOffset();
     ctx.included     = &plan;
     ctx.excluded     = excluded;
@@ -386,21 +397,26 @@ static void LogMonitors(const std::vector<MonitorRec>& mons)
     LogF(L"Displays: %d (ordered left to right)", count);
     for (int i = 0; i < count; ++i)
     {
-        const MonitorRec& m    = mons[static_cast<size_t>(i)];
-        const int         dest = DestSlot(i, count);
+        const MonitorRec& m     = mons[static_cast<size_t>(i)];
+        const int         left  = DestSlot(i, count, Rotation::Left);
+        const int         right = DestSlot(i, count, Rotation::Right);
 
-        wchar_t role[32] = L"";
-        if (dest >= 0) swprintf_s(role, L"windows -> [%d]", dest);
+        // Both destinations, because which one applies depends on the hotkey.
+        wchar_t role[48] = L"";
+        if (left >= 0 && right >= 0)
+            swprintf_s(role, L"left -> [%d], right -> [%d]", left, right);
 
         LogF(L"  [%d] %s%s bounds=%s work=%s %s",
              i, m.device.c_str(), m.primary ? L" (primary)" : L"",
              RectStr(m.bounds).c_str(), RectStr(m.work).c_str(), role);
     }
 
-    if (count > 2)
-        LogF(L"  note: %d displays; everything rotates one place to the left, "
-             L"[0] wrapping around to [%d]. Press %d times to get back.",
-             count, count - 1, count);
+    if (count == 2)
+        LogF(L"  note: with two displays both directions are the same swap.");
+    else if (count > 2)
+        LogF(L"  note: %d displays; left wraps [0] around to [%d] and right wraps "
+             L"[%d] back to [0]. One of each cancels out, or %d the same way.",
+             count, count - 1, count - 1, count);
 }
 
 static void LogPlanLine(const WindowRec& w, POINT off)
@@ -416,17 +432,17 @@ static void LogPlanLine(const WindowRec& w, POINT off)
          w.title.c_str(), w.cls.c_str());
 }
 
-SwapResult PerformSwap(HWND self, bool dryRun)
+SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir)
 {
     SwapResult res;
 
     std::vector<MonitorRec> mons;
     std::vector<WindowRec>  plan;
 
-    if (!Prepare(self, mons, plan, nullptr))
+    if (!Prepare(self, mons, dir, plan, nullptr))
     {
         res.monitors = static_cast<int>(mons.size());
-        LogF(L"Only %d display(s) detected - nothing to swap.", res.monitors);
+        LogF(L"Only %d display(s) detected - nothing to rotate.", res.monitors);
         return res;
     }
 
@@ -435,7 +451,7 @@ SwapResult PerformSwap(HWND self, bool dryRun)
     res.monitors   = static_cast<int>(mons.size());
     res.considered = static_cast<int>(plan.size());
 
-    LogF(L"---- %s ----", dryRun ? L"dry run" : L"swap");
+    LogF(L"---- %s, rotating %s ----", dryRun ? L"dry run" : L"rotate", DirName(dir));
     LogMonitors(mons);
     LogF(L"Windows to move: %d", res.considered);
 
@@ -471,7 +487,10 @@ void ListAll(HWND self)
     std::vector<WindowRec>  plan;
     std::vector<std::pair<std::wstring, std::wstring>> excluded;
 
-    const bool ok = Prepare(self, mons, plan, &excluded);
+    // Listing is direction-agnostic: the include/exclude decision and every
+    // window's source display are the same either way. Only the destination
+    // column differs, and the display table above shows both.
+    const bool ok = Prepare(self, mons, Rotation::Left, plan, &excluded);
 
     LogF(L"---- list ----");
     LogMonitors(mons);
@@ -485,7 +504,7 @@ void ListAll(HWND self)
     const POINT off = WorkspaceOffset();
 
     LogF(L"");
-    LogF(L"Included (%zu):", plan.size());
+    LogF(L"Included (%zu) - destinations shown for a left rotation:", plan.size());
     for (const WindowRec& w : plan)
         LogPlanLine(w, off);
 
@@ -524,65 +543,122 @@ int SelfTest()
     LogF(L"---- self test ----");
     LogMonitors(mons);
 
-    if (mons.size() < 2)
-    {
-        LogF(L"Self test needs two displays.");
-        return 2;
-    }
+    // The mapping checks below are pure arithmetic and run on any machine, including
+    // a one-display laptop and a CI runner. Only the remap and window-move tests
+    // further down need a second display, so the bail-out sits after them, not here
+    // - otherwise the part most likely to carry a bug would go untested exactly
+    // where it is easiest to run.
 
     // 0. The rotation itself, checked for display counts this machine may not have.
-    //    Each must be a left rotation and, just as importantly, a permutation - if
-    //    two displays ever shared a destination the swap would not be reversible.
+    //    Each direction must rotate the right way and, just as importantly, be a
+    //    permutation - if two displays ever shared a destination the rotation would
+    //    not be reversible.
+    const Rotation DIRS[2]      = { Rotation::Left, Rotation::Right };
+    const int      STEP[2]      = { -1, 1 };
+
     LogF(L"Rotation mapping:");
     for (int n = 2; n <= 5; ++n)
     {
-        std::wstring shown;
-        std::vector<int> hits(static_cast<size_t>(n), 0);
-        bool good = true;
+        for (int d = 0; d < 2; ++d)
+        {
+            const Rotation dir = DIRS[d];
+            std::wstring shown;
+            std::vector<int> hits(static_cast<size_t>(n), 0);
+            bool good = true;
 
+            for (int i = 0; i < n; ++i)
+            {
+                const int to = DestSlot(i, n, dir);
+                wchar_t part[32];
+                swprintf_s(part, L"%d->%d ", i, to);
+                shown += part;
+
+                if (to != ((i + STEP[d]) % n + n) % n) good = false;
+                else                                   ++hits[static_cast<size_t>(to)];
+            }
+            for (int h : hits) if (h != 1) good = false;
+
+            // n rotations the same way must land every display back on itself.
+            for (int i = 0; i < n; ++i)
+            {
+                int at = i;
+                for (int k = 0; k < n; ++k) at = DestSlot(at, n, dir);
+                if (at != i) good = false;
+            }
+
+            wchar_t msg[256];
+            swprintf_s(msg, L"%d displays %-5s: %s(cycle of %d)",
+                       n, DirName(dir), shown.c_str(), n);
+            check(good, msg);
+        }
+
+        // The whole point of the second hotkey: one of each cancels out, both ways
+        // round. Without this a sign error would only show up on a real desktop.
+        bool inverse = true;
         for (int i = 0; i < n; ++i)
         {
-            const int d = DestSlot(i, n);
-            wchar_t part[32];
-            swprintf_s(part, L"%d->%d ", i, d);
-            shown += part;
-
-            if (d != (i - 1 + n) % n) good = false;
-            else                      ++hits[static_cast<size_t>(d)];
+            if (DestSlot(DestSlot(i, n, Rotation::Left),  n, Rotation::Right) != i) inverse = false;
+            if (DestSlot(DestSlot(i, n, Rotation::Right), n, Rotation::Left)  != i) inverse = false;
         }
-        for (int h : hits) if (h != 1) good = false;
-
-        // n rotations must land every display back on itself.
-        int cycled = 0;
-        for (int i = 0; i < n; ++i)
-        {
-            int at = i;
-            for (int k = 0; k < n; ++k) at = DestSlot(at, n);
-            if (at == i) ++cycled;
-        }
-        if (cycled != n) good = false;
-
-        wchar_t msg[256];
-        swprintf_s(msg, L"%d displays: %s(cycle of %d)", n, shown.c_str(), n);
-        check(good, msg);
+        wchar_t msg[128];
+        swprintf_s(msg, L"%d displays: left then right is the identity, and so is right then left", n);
+        check(inverse, msg);
     }
 
-    check(DestSlot(0, 2) == 1 && DestSlot(1, 2) == 0,
-          L"two displays still reduce to a plain swap");
-    check(DestSlot(-1, 3) < 0 && DestSlot(3, 3) < 0 && DestSlot(0, 1) < 0,
-          L"out-of-range slots and single-display setups are rejected");
+    check(DestSlot(0, 2, Rotation::Left)  == 1 && DestSlot(1, 2, Rotation::Left)  == 0 &&
+          DestSlot(0, 2, Rotation::Right) == 1 && DestSlot(1, 2, Rotation::Right) == 0,
+          L"two displays reduce to the same plain swap in both directions");
+    check(DestSlot(-1, 3, Rotation::Left)  < 0 && DestSlot(3, 3, Rotation::Left)  < 0 &&
+          DestSlot(0, 1, Rotation::Left)   < 0 && DestSlot(-1, 3, Rotation::Right) < 0 &&
+          DestSlot(3, 3, Rotation::Right)  < 0 && DestSlot(0, 1, Rotation::Right)  < 0,
+          L"out-of-range slots and single-display setups are rejected either way");
+
+    // Everything from here needs somewhere to move a window to.
+    if (mons.size() < 2)
+    {
+        LogF(L"");
+        LogF(L"SKIPPED: the remap and window-move tests need a second display.");
+        LogF(L"Self test: %s (%d failure(s); window tests skipped)",
+             failures == 0 ? L"PASS" : L"FAIL", failures);
+        // 3, not 2: exit 2 already means a usage error, and a CI step that tolerates
+        // "partial pass" must not also swallow a mistyped argument.
+        return failures == 0 ? 3 : 1;
+    }
 
     // The window tests below follow the real rotation, so with three or more
     // displays they exercise the wrap-around rather than a made-up pair.
     const MonitorRec& A = mons[0];
-    const MonitorRec& B = mons[static_cast<size_t>(DestSlot(0, static_cast<int>(mons.size())))];
+    const MonitorRec& B = mons[static_cast<size_t>(
+        DestSlot(0, static_cast<int>(mons.size()), Rotation::Left))];
     const POINT off = WorkspaceOffset();
 
     LogF(L"Moving test windows from [0] %s to [%d] %s",
-         A.device.c_str(), DestSlot(0, static_cast<int>(mons.size())), B.device.c_str());
+         A.device.c_str(), DestSlot(0, static_cast<int>(mons.size()), Rotation::Left),
+         B.device.c_str());
 
     // 1. Pure math: a round trip through both work areas must be the identity.
-    LogF(L"Remap round-trip:");
+    // A round trip between two work areas is pixel-exact only when they are the same
+    // size: then every scale factor is 1.0 and the remap is a pure translation. When
+    // they differ, the leg that scales down rounds away information the leg that
+    // scales up cannot restore, so each edge may come back off by up to the size
+    // ratio, rounded up. Asserting exact equality there would fail correct code.
+    const auto roundTripSlack = [](const RECT& a, const RECT& b) -> LONG {
+        const double aw = a.right - a.left, ah = a.bottom - a.top;
+        const double bw = b.right - b.left, bh = b.bottom - b.top;
+        if (aw == bw && ah == bh) return 0;
+        const double rx = aw > bw ? aw / bw : bw / aw;
+        const double ry = ah > bh ? ah / bh : bh / ah;
+        return static_cast<LONG>(std::ceil(rx > ry ? rx : ry));
+    };
+    const auto within = [](const RECT& p, const RECT& q, LONG slack) {
+        return std::abs(p.left  - q.left)  <= slack && std::abs(p.top    - q.top)    <= slack &&
+               std::abs(p.right - q.right) <= slack && std::abs(p.bottom - q.bottom) <= slack;
+    };
+    const LONG slack = roundTripSlack(A.work, B.work);
+
+    LogF(L"Remap round-trip (%s):",
+         slack == 0 ? L"same-size work areas, must be pixel-exact"
+                    : L"work areas differ in size, rounding slack allowed");
     const RECT samples[] = {
         { A.work.left + 10,  A.work.top + 10,  A.work.left + 410,  A.work.top + 310  },
         { A.work.left - 7,   A.work.top + 0,   A.work.left + 953,  A.work.top + 1032 },
@@ -593,9 +669,9 @@ int SelfTest()
         const RECT there = RemapRect(s,     A.work, B.work, B.bounds);
         const RECT back  = RemapRect(there, B.work, A.work, A.bounds);
         wchar_t msg[256];
-        swprintf_s(msg, L"%s -> %s -> %s",
-                   RectStr(s).c_str(), RectStr(there).c_str(), RectStr(back).c_str());
-        check(EqualRect(&back, &s) != FALSE, msg);
+        swprintf_s(msg, L"%s -> %s -> %s (slack %ld px)",
+                   RectStr(s).c_str(), RectStr(there).c_str(), RectStr(back).c_str(), slack);
+        check(within(back, s, slack), msg);
     }
 
     // 2. Real windows: the paths that actually move things.
@@ -686,6 +762,37 @@ int SelfTest()
         const HMONITOR m = MonitorFromRect(&ns, MONITOR_DEFAULTTONEAREST);
         check(IsIconic(wnd[2]) != FALSE && m == B.handle,
               L"minimized window stayed minimized and will restore on the other display");
+    }
+
+    // The promise the second hotkey makes, tested on a real window rather than on
+    // the arithmetic: wnd[0] has already rotated A -> B, so rotating it back B -> A
+    // must return it to where it started - exactly when A and B share a size, within
+    // rounding slack otherwise. This covers the reverse remap and ApplyOne together.
+    //
+    // It deliberately does NOT cover two things, which are tested elsewhere - so do
+    // not delete those on the strength of this one:
+    //  - direction: B -> A is fixed here, not derived from DestSlot. Whether Right
+    //    really is Left's inverse is checked by the rotation-mapping tests above.
+    //  - clamping: this window sits wholly inside both work areas, so a clamp would
+    //    never touch it. samples[1] in the remap round-trip overhangs on purpose.
+    {
+        const RECT before = rec[0].rect;
+
+        WindowRec back;
+        back.hwnd  = wnd[0];
+        back.state = WinState::Normal;
+        GetWindowRect(wnd[0], &back.rect);
+        back.targetRect   = RemapRect(back.rect, B.work, A.work, A.bounds);
+        back.targetNormal = ScreenToWorkspace(back.targetRect, off);
+        ApplyOne(back);
+        PumpFor(400);
+
+        RECT got = {};
+        GetWindowRect(wnd[0], &got);
+        wchar_t msg[256];
+        swprintf_s(msg, L"normal window rotated back to %s (started at %s, slack %ld px)",
+                   RectStr(got).c_str(), RectStr(before).c_str(), slack);
+        check(within(got, before, slack), msg);
     }
 
     for (HWND h : wnd) DestroyWindow(h);

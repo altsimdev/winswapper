@@ -16,6 +16,11 @@ struct MonitorRec
 
 enum class WinState { Normal, Maximized, Minimized };
 
+// Which way windows travel between displays. Left is the original behaviour; Right
+// is its exact inverse as a mapping between displays, so one of each returns every
+// window to its own display - and to its exact pixel when the displays share a size.
+enum class Rotation { Left, Right };
+
 struct WindowRec
 {
     HWND            hwnd    = nullptr;
@@ -42,10 +47,10 @@ struct SwapResult
 std::vector<MonitorRec> EnumerateMonitors();
 
 // Where the windows on display `slot` are headed. Displays are ordered
-// left-to-right and everything rotates one place to the left, with the leftmost
-// wrapping around to the rightmost. With two displays that degenerates to a
-// straight swap, which is why the two-display behaviour is unchanged.
-int DestSlot(int slot, int count);
+// left-to-right and everything rotates one place, with the end display wrapping
+// around. With two displays either direction degenerates to the same straight
+// swap, which is why the two-display behaviour is unchanged.
+int DestSlot(int slot, int count, Rotation dir);
 
 // rcNormalPosition lives in "workspace" coordinates, which differ from screen
 // coordinates by the primary monitor's work-area origin (non-zero only when the
@@ -61,6 +66,6 @@ RECT RemapRect(const RECT& r, const RECT& srcWork, const RECT& dstWork, const RE
 
 bool ApplyOne(const WindowRec& w);
 
-SwapResult PerformSwap(HWND self, bool dryRun);
+SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir);
 void       ListAll(HWND self);
 int        SelfTest();

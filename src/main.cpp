@@ -9,14 +9,16 @@
 
 #define WM_TRAYICON (WM_APP + 1)
 
-static const UINT kHotkeyId = 1;
-static const UINT kTrayId   = 1;
+static const UINT kHotkeyLeft  = 1;
+static const UINT kHotkeyRight = 2;
+static const UINT kTrayId      = 1;
 
 static HINSTANCE g_inst           = nullptr;
 static HWND      g_hwnd           = nullptr;
 static HICON     g_icon           = nullptr;
 static UINT      g_taskbarCreated = 0;
-static bool      g_hotkeyOk       = false;
+static bool      g_leftOk         = false;
+static bool      g_rightOk        = false;
 static HANDLE    g_mutex          = nullptr;
 
 // ------------------------------------------------------------------ tray ----
@@ -30,7 +32,7 @@ static void AddTrayIcon()
     nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon            = g_icon;
-    wcscpy_s(nid.szTip, L"WinSwapper - Ctrl+Alt+S rotates windows one display left");
+    wcscpy_s(nid.szTip, L"WinSwapper - Ctrl+Alt+S rotates left, +Shift rotates right");
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -62,9 +64,9 @@ static void Balloon(const wchar_t* text, DWORD infoFlag)
 
 // ---------------------------------------------------------------- actions ---
 
-static void DoSwap()
+static void DoRotate(Rotation dir)
 {
-    const SwapResult r = PerformSwap(g_hwnd, false);
+    const SwapResult r = PerformSwap(g_hwnd, false, dir);
 
     if (r.monitors < 2)
     {
@@ -91,18 +93,24 @@ static void OpenLog()
 
 static void ShowAbout()
 {
-    wchar_t msg[768];
+    wchar_t msg[1024];
     swprintf_s(msg,
-               L"WinSwapper 1.01\n\n"
-               L"Moves every ordinary window one display to the left, with the leftmost "
-               L"display wrapping around to the rightmost. Each window keeps its size and "
-               L"its position within its display.\n\n"
-               L"With two displays that is a straight swap, so pressing twice puts "
-               L"everything back; with N displays it takes N presses.\n\n"
-               L"Hotkey: %s\n"
+               L"WinSwapper 1.03\n\n"
+               L"Moves every ordinary window one display to the left or the right, with "
+               L"the end display wrapping around. Each window keeps its size and its "
+               L"position within its display.\n\n"
+               L"The two directions are inverses, so one of each puts everything back - "
+               L"pixel-exact when the displays share a resolution. With two displays both "
+               L"do the same swap; with N displays, N presses the same way also completes "
+               L"the cycle.\n\n"
+               L"Rotate left:  %s\n"
+               L"Rotate right: %s\n"
                L"Log: %s\n\n"
-               L"Command line: --list, --dry-run, --rotate, --selftest",
-               g_hotkeyOk ? L"Ctrl+Alt+S" : L"Ctrl+Alt+S (UNAVAILABLE - taken by another app)",
+               L"Command line: --list, --dry-run, --rotate, --reverse, --selftest",
+               g_leftOk  ? L"Ctrl+Alt+S"
+                         : L"Ctrl+Alt+S (UNAVAILABLE - taken by another app)",
+               g_rightOk ? L"Ctrl+Alt+Shift+S"
+                         : L"Ctrl+Alt+Shift+S (UNAVAILABLE - taken by another app)",
                LogFilePath());
     MessageBoxW(nullptr, msg, L"About WinSwapper", MB_OK | MB_ICONINFORMATION);
 }
@@ -115,7 +123,10 @@ static void ShowMenu()
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
-    AppendMenuW(menu, MF_STRING, IDM_SWAP,  L"&Rotate now\tCtrl+Alt+S");
+    // Mnemonics must stay unique across the whole menu - F, R, L, A, X - or Windows
+    // only cycles the highlight between the clashing items instead of invoking one.
+    AppendMenuW(menu, MF_STRING, IDM_LEFT,  L"Rotate le&ft\tCtrl+Alt+S");
+    AppendMenuW(menu, MF_STRING, IDM_RIGHT, L"Rotate &right\tCtrl+Alt+Shift+S");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_LOG,   L"Open &log");
     AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"&About");
@@ -148,23 +159,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         switch (LOWORD(lp))
         {
         case WM_CONTEXTMENU:
-        case WM_RBUTTONUP:     ShowMenu(); break;
-        case WM_LBUTTONDBLCLK: DoSwap();   break;
+        case WM_RBUTTONUP:     ShowMenu();               break;
+        case WM_LBUTTONDBLCLK: DoRotate(Rotation::Left); break;
         default: break;
         }
         return 0;
 
     case WM_HOTKEY:
-        if (wp == kHotkeyId) DoSwap();
+        if      (wp == kHotkeyLeft)  DoRotate(Rotation::Left);
+        else if (wp == kHotkeyRight) DoRotate(Rotation::Right);
         return 0;
 
     case WM_COMMAND:
         switch (LOWORD(wp))
         {
-        case IDM_SWAP:  DoSwap();            break;
-        case IDM_LOG:   OpenLog();           break;
-        case IDM_ABOUT: ShowAbout();         break;
-        case IDM_EXIT:  DestroyWindow(hwnd); break;
+        case IDM_LEFT:  DoRotate(Rotation::Left);  break;
+        case IDM_RIGHT: DoRotate(Rotation::Right); break;
+        case IDM_LOG:   OpenLog();                 break;
+        case IDM_ABOUT: ShowAbout();               break;
+        case IDM_EXIT:  DestroyWindow(hwnd);       break;
         default: break;
         }
         return 0;
@@ -175,7 +188,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_DESTROY:
         RemoveTrayIcon();
-        if (g_hotkeyOk) UnregisterHotKey(hwnd, kHotkeyId);
+        if (g_leftOk)  UnregisterHotKey(hwnd, kHotkeyLeft);
+        if (g_rightOk) UnregisterHotKey(hwnd, kHotkeyRight);
         PostQuitMessage(0);
         return 0;
 
@@ -190,13 +204,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 static void PrintUsage()
 {
-    LogF(L"WinSwapper - rotate windows one display to the left.");
+    LogF(L"WinSwapper - rotate windows one display left or right.");
     LogF(L"");
-    LogF(L"  winswapper.exe             run in the notification area (Ctrl+Alt+S rotates)");
+    LogF(L"  winswapper.exe             run in the notification area");
+    LogF(L"                             Ctrl+Alt+S rotates left, Ctrl+Alt+Shift+S right");
     LogF(L"  winswapper.exe --list      show displays and every window, included or not");
     LogF(L"  winswapper.exe --dry-run   compute the rotation and print it, move nothing");
     LogF(L"  winswapper.exe --rotate    perform one rotation and exit (--swap also works)");
     LogF(L"  winswapper.exe --selftest  verify the remap math and the window-move paths");
+    LogF(L"");
+    LogF(L"  --reverse, --right         with --rotate or --dry-run, rotate right instead;");
+    LogF(L"                             an error with anything else");
+    LogF(L"");
+    LogF(L"--selftest exits 0 if every check ran and passed, 3 if it passed but skipped");
+    LogF(L"the window-move tests for want of a second display, and 1 on a failure.");
+    LogF(L"Usage errors exit 2.");
     LogF(L"");
     LogF(L"Log file: %s", LogFilePath());
 }
@@ -206,6 +228,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     g_inst = inst;
 
     bool doList = false, doDry = false, doSwapOnce = false, doSelfTest = false, doHelp = false;
+    bool reverse = false;
     bool badArg = false;
 
     int     argc = 0;
@@ -220,22 +243,29 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
             else if (a == L"--rotate")   doSwapOnce = true;
             else if (a == L"--swap")     doSwapOnce = true;   // the pre-1.01 spelling
             else if (a == L"--selftest") doSelfTest = true;
+            // A modifier, not a mode: it picks the direction for --rotate/--dry-run.
+            else if (a == L"--reverse" || a == L"--right") reverse = true;
             else if (a == L"--help" || a == L"-h" || a == L"/?") doHelp = true;
             else                         badArg     = true;
         }
         LocalFree(argv);
     }
 
-    if (doHelp || badArg || doList || doDry || doSwapOnce || doSelfTest)
+    // --reverse only means something alongside --rotate or --dry-run. On its own it
+    // would otherwise fall through to tray mode and be silently ignored.
+    const bool strayReverse = reverse && !doDry && !doSwapOnce;
+
+    if (doHelp || badArg || strayReverse || doList || doDry || doSwapOnce || doSelfTest)
     {
         LogInit(true, true);
 
         int rc = 0;
-        if (doHelp || badArg)
+        if (doHelp || badArg || strayReverse)
         {
-            if (badArg) LogF(L"Unrecognised argument.");
+            if (badArg)            LogF(L"Unrecognised argument.");
+            else if (strayReverse) LogF(L"--reverse needs --rotate or --dry-run to act on.");
             PrintUsage();
-            rc = badArg ? 2 : 0;
+            rc = (badArg || strayReverse) ? 2 : 0;
         }
         else if (doSelfTest)
         {
@@ -247,7 +277,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         }
         else
         {
-            PerformSwap(nullptr, doDry);
+            PerformSwap(nullptr, doDry, reverse ? Rotation::Right : Rotation::Left);
         }
 
         LogF(L"(log: %s)", LogFilePath());
@@ -302,17 +332,35 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
 
     AddTrayIcon();
 
-    g_hotkeyOk = RegisterHotKey(g_hwnd, kHotkeyId,
-                                MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'S') != FALSE;
-    if (!g_hotkeyOk)
-    {
+    // Registered separately so losing one combination to another app still leaves
+    // the other working. Ctrl+Alt+S and Ctrl+Alt+Shift+S are distinct to
+    // RegisterHotKey, so holding Shift picks the reverse rotation on its own.
+    g_leftOk  = RegisterHotKey(g_hwnd, kHotkeyLeft,
+                               MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'S') != FALSE;
+    if (!g_leftOk)
         LogF(L"RegisterHotKey(Ctrl+Alt+S) failed, error %lu.", GetLastError());
-        Balloon(L"Ctrl+Alt+S is already taken by another app.\n"
+
+    g_rightOk = RegisterHotKey(g_hwnd, kHotkeyRight,
+                               MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'S') != FALSE;
+    if (!g_rightOk)
+        LogF(L"RegisterHotKey(Ctrl+Alt+Shift+S) failed, error %lu.", GetLastError());
+
+    if (g_leftOk && g_rightOk)
+    {
+        LogF(L"Hotkeys registered: Ctrl+Alt+S rotates left, Ctrl+Alt+Shift+S rotates right.");
+    }
+    else if (!g_leftOk && !g_rightOk)
+    {
+        Balloon(L"Both Ctrl+Alt+S and Ctrl+Alt+Shift+S are taken by another app.\n"
                 L"Use the tray menu to rotate.", NIIF_WARNING);
     }
     else
     {
-        LogF(L"Hotkey Ctrl+Alt+S registered.");
+        Balloon(g_leftOk ? L"Ctrl+Alt+Shift+S is taken by another app.\n"
+                           L"Rotating right is still on the tray menu."
+                         : L"Ctrl+Alt+S is taken by another app.\n"
+                           L"Rotating left is still on the tray menu.",
+                NIIF_WARNING);
     }
 
     MSG msg;
