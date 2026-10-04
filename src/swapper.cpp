@@ -344,6 +344,9 @@ bool ApplyOne(const WindowRec& w)
         //
         // The move must be synchronous - SWP_ASYNCWINDOWPOS would let the maximize
         // run before the window had actually gone anywhere.
+        //
+        // SW_MAXIMIZE also activates the window, which drags it to the front. That
+        // is repaired once every window has moved, in RestoreStacking().
         ShowWindow(w.hwnd, SW_SHOWNOACTIVATE);
 
         const BOOL moved = SetWindowPos(w.hwnd, nullptr,
@@ -366,6 +369,80 @@ bool ApplyOne(const WindowRec& w)
     wp.flags &= WPF_RESTORETOMAXIMIZED;
 
     return SetWindowPlacement(w.hwnd, &wp) != FALSE;
+}
+
+static void RestoreStacking(const std::vector<WindowRec>& plan, const std::vector<bool>& applied,
+                            HWND foreground, HWND self)
+{
+    // Re-maximizing activates a window and activation brings it to the front, so
+    // applying a plan top-to-bottom leaves its maximized windows stacked in exactly
+    // the reverse of how they started, all in front of normal windows that used to
+    // cover them. The self-test reproduces this with real windows.
+    //
+    // Normal windows are moved with SWP_NOZORDER and never leave their place, which
+    // makes them reliable anchors: every window moved by a path that can disturb
+    // the stacking goes back directly beneath the plan window that was above it.
+    // Working top to bottom means that window has always been put back already.
+    //
+    // Only maximized and minimized windows are re-stacked, and not merely because
+    // they are the ones disturbed. SetWindowPos here is synchronous, so it waits on
+    // the window's thread - but those windows have just had synchronous calls from
+    // ApplyOne anyway, so a hung application cannot stall the rotation any more
+    // than it already could. Re-stacking normal windows too would throw away the
+    // protection SWP_ASYNCWINDOWPOS gives them.
+    //
+    // Topmost and ordinary windows are two separate stacks. Placing a window under
+    // one from the other stack would move it across - promoting an ordinary window
+    // to always-on-top, or demoting a topmost one - so each window is anchored only
+    // to its own kind.
+    const auto topmost = [](HWND h) {
+        return (GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    };
+
+    for (size_t i = 0; i < plan.size(); ++i)
+    {
+        if (!applied[i] || plan[i].state == WinState::Normal) continue;
+
+        const bool band  = topmost(plan[i].hwnd);
+        HWND       above = nullptr;
+        for (size_t j = i; j-- > 0; )
+        {
+            if (topmost(plan[j].hwnd) == band) { above = plan[j].hwnd; break; }
+        }
+
+        // No anchor means it was the front window of its stack, which is exactly
+        // where activation left it.
+        if (above)
+            SetWindowPos(plan[i].hwnd, above, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
+    // Activation also handed the focus to whichever window was re-maximized last.
+    // Give it back. Our own hidden window is skipped: it holds the focus only while
+    // the tray menu is open, and there is nothing to hand back in that case.
+    if (foreground && foreground != self && IsWindow(foreground) &&
+        GetForegroundWindow() != foreground)
+        SetForegroundWindow(foreground);
+}
+
+std::vector<bool> ApplyPlan(const std::vector<WindowRec>& plan, HWND self)
+{
+    // Taken before anything moves, because re-maximizing hands the focus away.
+    const HWND foreground = GetForegroundWindow();
+
+    std::vector<bool> applied(plan.size(), false);
+    for (size_t i = 0; i < plan.size(); ++i)
+    {
+        const WindowRec& w   = plan[i];
+        const bool       ok  = ApplyOne(w);
+        const DWORD      err = GetLastError();
+        applied[i] = ok;
+        if (!ok)
+            LogF(L"  FAILED (err %lu) \"%s\" [%s]", err, w.title.c_str(), w.cls.c_str());
+    }
+
+    RestoreStacking(plan, applied, foreground, self);
+    return applied;
 }
 
 // ------------------------------------------------------------- operations ---
@@ -464,17 +541,10 @@ SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir)
         return res;
     }
 
-    for (const WindowRec& w : plan)
+    for (const bool ok : ApplyPlan(plan, self))
     {
-        if (ApplyOne(w))
-        {
-            ++res.moved;
-        }
-        else
-        {
-            ++res.failed;
-            LogF(L"  FAILED (err %lu) \"%s\" [%s]", GetLastError(), w.title.c_str(), w.cls.c_str());
-        }
+        if (ok) ++res.moved;
+        else    ++res.failed;
     }
 
     LogF(L"Moved %d of %d window(s), %d failed.", res.moved, res.considered, res.failed);
@@ -515,6 +585,34 @@ void ListAll(HWND self)
 }
 
 // --------------------------------------------------------------- self test --
+
+struct ZRankCtx
+{
+    const std::vector<HWND>* wnds  = nullptr;
+    std::vector<int>*        ranks = nullptr;
+    int                      next  = 0;
+};
+
+static BOOL CALLBACK ZRankProc(HWND h, LPARAM lp)
+{
+    auto* c = reinterpret_cast<ZRankCtx*>(lp);
+    for (size_t i = 0; i < c->wnds->size(); ++i)
+        if ((*c->wnds)[i] == h) (*c->ranks)[i] = c->next;
+    ++c->next;
+    return TRUE;
+}
+
+// Where each window sits in the current top-to-bottom stacking order (lower is
+// nearer the front), or -1 if it is no longer a top-level window.
+static std::vector<int> ZRanks(const std::vector<HWND>& wnds)
+{
+    std::vector<int> ranks(wnds.size(), -1);
+    ZRankCtx ctx;
+    ctx.wnds  = &wnds;
+    ctx.ranks = &ranks;
+    EnumWindows(ZRankProc, reinterpret_cast<LPARAM>(&ctx));
+    return ranks;
+}
 
 static void PumpFor(DWORD ms)
 {
@@ -797,6 +895,85 @@ int SelfTest()
 
     for (HWND h : wnd) DestroyWindow(h);
     PumpFor(100);
+
+    // 3. Stacking order. Re-maximizing activates a window, and activation brings it
+    //    to the front, so a plan applied top-to-bottom used to leave two maximized
+    //    windows on one display in reverse order - both now in front of a normal
+    //    window that had been covering them. Three windows on A, stacked normal over
+    //    maximized over maximized, must arrive on B stacked the same way.
+    LogF(L"Stacking order:");
+    {
+        HWND st[3] = {};
+        const wchar_t* names[3] = { L"WinSwapper stack test: normal (top)",
+                                    L"WinSwapper stack test: maximized (middle)",
+                                    L"WinSwapper stack test: maximized (bottom)" };
+        bool created = true;
+        for (int i = 0; i < 3; ++i)
+        {
+            st[i] = CreateWindowExW(0, wc.lpszClassName, names[i], WS_OVERLAPPEDWINDOW,
+                                    A.work.left + 120 + i * 40, A.work.top + 120 + i * 40,
+                                    420, 300, nullptr, nullptr, wc.hInstance, nullptr);
+            if (!st[i]) { created = false; break; }
+            ShowWindow(st[i], SW_SHOWNORMAL);
+        }
+        check(created, L"created the three stacking test windows");
+
+        if (created)
+        {
+            ShowWindow(st[1], SW_MAXIMIZE);
+            ShowWindow(st[2], SW_MAXIMIZE);
+
+            // Stack them explicitly, bottom first, so the starting order is known
+            // rather than an accident of creation and activation.
+            for (int i = 2; i >= 0; --i)
+                SetWindowPos(st[i], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            PumpFor(400);
+
+            const std::vector<HWND> order(st, st + 3);
+            const std::vector<int>  before = ZRanks(order);
+            check(before[0] >= 0 && before[0] < before[1] && before[1] < before[2],
+                  L"precondition: EnumWindows reports the test windows top to bottom");
+
+            // Built in the same top-to-bottom order Prepare() gets from EnumWindows,
+            // and applied through ApplyPlan() exactly as PerformSwap() applies one -
+            // so dropping the re-stacking from that path would fail this check.
+            std::vector<WindowRec> plan(3);
+            for (size_t i = 0; i < plan.size(); ++i)
+            {
+                WindowRec& r = plan[i];
+                r.hwnd      = st[i];
+                r.state     = (i == 0) ? WinState::Normal : WinState::Maximized;
+                r.wp.length = sizeof(r.wp);
+                GetWindowPlacement(st[i], &r.wp);
+                GetWindowRect(st[i], &r.rect);
+
+                const RECT from = (r.state == WinState::Normal)
+                                ? r.rect
+                                : WorkspaceToScreen(r.wp.rcNormalPosition, off);
+                r.targetRect   = RemapRect(from, A.work, B.work, B.bounds);
+                r.targetNormal = ScreenToWorkspace(r.targetRect, off);
+            }
+            ApplyPlan(plan, nullptr);
+            PumpFor(500);
+
+            const std::vector<int> after = ZRanks(order);
+            wchar_t msg[256];
+            swprintf_s(msg, L"normal over maximized over maximized after moving "
+                            L"(z-ranks before %d,%d,%d; after %d,%d,%d)",
+                       before[0], before[1], before[2], after[0], after[1], after[2]);
+            check(after[0] >= 0 && after[0] < after[1] && after[1] < after[2], msg);
+
+            bool allOnB = true;
+            for (HWND h : st)
+                if (MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) != B.handle) allOnB = false;
+            check(allOnB && IsZoomed(st[1]) != FALSE && IsZoomed(st[2]) != FALSE,
+                  L"all three reached the target display, the maximized two still maximized");
+        }
+
+        for (HWND h : st) if (h) DestroyWindow(h);
+        PumpFor(100);
+    }
+
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
     LogF(L"Self test: %s (%d failure(s))", failures == 0 ? L"PASS" : L"FAIL", failures);

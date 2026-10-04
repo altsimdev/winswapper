@@ -124,6 +124,15 @@ The three window states each need different treatment:
   the window stays minimized but reappears on its destination display. `WPF_RESTORETOMAXIMIZED` is
   preserved, so a window that was maximized before being minimized still restores maximized.
 
+**Keeping the stacking order.** Re-maximizing a window activates it, and activation pulls it to the
+front. Applied in the top-to-bottom order windows are enumerated in, that used to leave two
+maximized windows on one display in reverse order, both in front of any normal window that had
+been covering them. So once everything has moved, each maximized or minimized window is put back
+directly beneath the moved window that had been above it — normal windows never leave their place,
+so they anchor the rest — and the window that had the focus gets it back. Always-on-top windows are only
+ever re-stacked among themselves, so nothing crosses between the two layers. The self-test stacks a
+normal window over two maximized ones and checks they arrive in the same order.
+
 ## Known limitations
 
 - **Elevated windows cannot be moved.** A process running as you cannot reposition a window owned
@@ -133,8 +142,12 @@ The three window states each need different treatment:
 - **Owned windows are skipped.** The filter matches Alt-Tab semantics, so the occasional
   application whose main window is *owned* by another window will be left alone.
 - **Only the current virtual desktop is touched.** A deliberate consequence of the cloak filter.
-- **Re-maximizing activates.** Because a maximized window has to be restored and re-maximized,
-  the last maximized window processed ends up focused, and there is a brief flash as it moves.
+- **Maximized windows flash as they move.** A maximized window has to be restored, moved and
+  re-maximized, so it briefly appears at its restored size on the way. Its stacking position and
+  the focus are put back afterwards.
+- **Stacking is restored among moved windows only.** A window that is not moved — a tool window,
+  say — keeps its place, so if one sat between two maximized windows it can end up on the other
+  side of one of them.
 - **Different DPI per display.** The app is Per-Monitor-V2 aware, so coordinates are real physical
   pixels. If displays run different scaling factors, applications will re-layout their contents on
   arrival, which the proportional mapping accounts for but cannot make invisible.

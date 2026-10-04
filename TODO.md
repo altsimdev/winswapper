@@ -1,7 +1,7 @@
 ### Todo
 
 - [ ] Add options to allow user to change keybindins.
-- [ ] Add option to allow the program to start when Windows starts up.
+- [ ] Add option to start when Windows starts up but keep it disabled by default.
 - [ ] Add support for other operating systems / window managers.
 
 ### In Progress

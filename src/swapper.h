@@ -66,6 +66,12 @@ RECT RemapRect(const RECT& r, const RECT& srcWork, const RECT& dstWork, const RE
 
 bool ApplyOne(const WindowRec& w);
 
+// Moves every window in plan, then puts back the stacking order and the focused
+// window that re-maximizing disturbs. plan must still be in its original
+// top-to-bottom order - the order EnumWindows produced it in. Returns which
+// windows were actually moved; each failure is logged.
+std::vector<bool> ApplyPlan(const std::vector<WindowRec>& plan, HWND self);
+
 SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir);
 void       ListAll(HWND self);
 int        SelfTest();
