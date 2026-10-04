@@ -4,7 +4,7 @@ What changed in each release. When a version is tagged, the release workflow pub
 whose heading matches the tag as that release's notes - and refuses to publish a release that has
 no section here, so add the entry before pushing the tag.
 
-## Unreleased
+## 1.05 - 2026-10-04
 
 - **New:** *Start with Windows* in the tray menu, off by default. It registers WinSwapper for your
   user only, and the checkmark stays accurate if you switch it off in Task Manager instead.
