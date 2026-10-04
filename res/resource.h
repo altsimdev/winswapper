@@ -3,10 +3,14 @@
 // IDI_APPICON is the lowest id on purpose: Explorer shows the first icon group as
 // the exe's own icon. It is the three-display picture; the tray swaps between the
 // IDI_DISPLAYS_* icons to match how many displays are connected.
+//
+// IDI_DISPLAYS_3 is the same picture, so it names the same resource rather than
+// embedding displays-3.ico a second time (about 19 KB). It must not be given its
+// own line in winswapper.rc - that would be a duplicate of id 101.
 #define IDI_APPICON    101
 #define IDI_DISPLAYS_1 102
 #define IDI_DISPLAYS_2 103
-#define IDI_DISPLAYS_3 104
+#define IDI_DISPLAYS_3 IDI_APPICON
 #define IDI_DISPLAYS_4 105
 
 #define IDM_LEFT    40001
