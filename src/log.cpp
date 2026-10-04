@@ -8,7 +8,14 @@ static HANDLE  g_file = INVALID_HANDLE_VALUE;
 static HANDLE  g_con  = INVALID_HANDLE_VALUE;
 static wchar_t g_path[MAX_PATH] = {};
 
-static void BuildPath()
+static const wchar_t kTrayLog[] = L"winswapper.log";
+static const wchar_t kCliLog[]  = L"winswapper-cli.log";
+
+// The tray log is never truncated by a run, so it is rolled over to a single
+// .old.log instead once it passes this size. Checked at start-up only.
+static const LONGLONG kTrayLogLimit = 1024 * 1024;
+
+static void BuildPath(const wchar_t* name)
 {
     wchar_t base[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0)
@@ -18,24 +25,48 @@ static void BuildPath()
     swprintf_s(dir, L"%s\\WinSwapper", base);
     CreateDirectoryW(dir, nullptr);
 
-    swprintf_s(g_path, L"%s\\winswapper.log", dir);
+    swprintf_s(g_path, L"%s\\%s", dir, name);
 }
 
-void LogInit(bool truncate, bool echoConsole)
+// Before command-line runs got a file of their own, every one of them truncated
+// the shared log, which incidentally kept it small. Without that, an app that
+// can run for weeks needs an explicit cap.
+static void RollOverIfLarge()
 {
-    BuildPath();
+    WIN32_FILE_ATTRIBUTE_DATA fa = {};
+    if (!GetFileAttributesExW(g_path, GetFileExInfoStandard, &fa)) return;
 
-    const DWORD access = truncate ? GENERIC_WRITE : FILE_APPEND_DATA;
-    const DWORD disp   = truncate ? CREATE_ALWAYS : OPEN_ALWAYS;
+    const LONGLONG size = (static_cast<LONGLONG>(fa.nFileSizeHigh) << 32) | fa.nFileSizeLow;
+    if (size <= kTrayLogLimit) return;
+
+    wchar_t old[MAX_PATH] = {};
+    swprintf_s(old, L"%s", g_path);
+    wchar_t* dot = wcsrchr(old, L'.');
+    if (dot) *dot = L'\0';
+    wcscat_s(old, L".old.log");
+    MoveFileExW(g_path, old, MOVEFILE_REPLACE_EXISTING);
+}
+
+void LogInit(LogMode mode)
+{
+    const bool cli = (mode == LogMode::Cli);
+    BuildPath(cli ? kCliLog : kTrayLog);
+    if (!cli) RollOverIfLarge();
+
+    const DWORD access = cli ? GENERIC_WRITE : FILE_APPEND_DATA;
+    const DWORD disp   = cli ? CREATE_ALWAYS : OPEN_ALWAYS;
 
     g_file = CreateFileW(g_path, access, FILE_SHARE_READ, nullptr, disp,
                          FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (g_file != INVALID_HANDLE_VALUE)
     {
-        if (truncate)
+        LARGE_INTEGER size = {};
+        if (GetFileSizeEx(g_file, &size) && size.QuadPart == 0)
         {
             // BOM so the log opens as UTF-8 in Notepad and Get-Content alike.
+            // Written to any new file, not only truncated ones, since the tray
+            // log is now created fresh rather than inherited from a CLI run.
             const unsigned char bom[] = { 0xEF, 0xBB, 0xBF };
             DWORD written = 0;
             WriteFile(g_file, bom, sizeof(bom), &written, nullptr);
@@ -46,7 +77,7 @@ void LogInit(bool truncate, bool echoConsole)
         }
     }
 
-    if (echoConsole && AttachConsole(ATTACH_PARENT_PROCESS))
+    if (cli && AttachConsole(ATTACH_PARENT_PROCESS))
     {
         // The CRT's stdout is not wired up in a GUI-subsystem process, so talk to
         // the console device directly.
@@ -63,7 +94,7 @@ void LogShutdown()
 
 const wchar_t* LogFilePath()
 {
-    if (g_path[0] == L'\0') BuildPath();
+    if (g_path[0] == L'\0') BuildPath(kTrayLog);
     return g_path;
 }
 

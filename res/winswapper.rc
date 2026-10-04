@@ -1,7 +1,11 @@
 #include <windows.h>
 #include "resource.h"
 
-IDI_APPICON ICON "app.ico"
+IDI_APPICON    ICON "displays-3.ico"
+IDI_DISPLAYS_1 ICON "displays-1.ico"
+IDI_DISPLAYS_2 ICON "displays-2.ico"
+IDI_DISPLAYS_3 ICON "displays-3.ico"
+IDI_DISPLAYS_4 ICON "displays-4.ico"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION    1,0,4,0

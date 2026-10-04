@@ -1,5 +1,7 @@
 #include "swapper.h"
 #include "log.h"
+#include "resource.h"
+#include "tray.h"
 
 #include <dwmapi.h>
 
@@ -710,6 +712,93 @@ int SelfTest()
           DestSlot(0, 1, Rotation::Left)   < 0 && DestSlot(-1, 3, Rotation::Right) < 0 &&
           DestSlot(3, 3, Rotation::Right)  < 0 && DestSlot(0, 1, Rotation::Right)  < 0,
           L"out-of-range slots and single-display setups are rejected either way");
+
+    // Tray icon: a picture for each count from one to four, four for anything
+    // beyond - and every one of them has to actually be in the exe.
+    LogF(L"Tray icon:");
+    {
+        const int expect[] = { IDI_DISPLAYS_1, IDI_DISPLAYS_1, IDI_DISPLAYS_2, IDI_DISPLAYS_3,
+                               IDI_DISPLAYS_4, IDI_DISPLAYS_4, IDI_DISPLAYS_4 };   // for 0 to 6
+        bool mapped = true;
+        for (int n = 0; n < static_cast<int>(_countof(expect)); ++n)
+            if (TrayIconResource(n) != expect[n]) mapped = false;
+        check(mapped, L"0-1 displays picture one, 2 and 3 their own, 4 or more picture four");
+
+        const int ids[] = { IDI_APPICON, IDI_DISPLAYS_1, IDI_DISPLAYS_2, IDI_DISPLAYS_3, IDI_DISPLAYS_4 };
+        bool loaded = true;
+        for (int id : ids)
+        {
+            HICON h = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(id),
+                                                    IMAGE_ICON, 16, 16, 0));
+            if (h) DestroyIcon(h);
+            else   loaded = false;
+        }
+        check(loaded, L"the exe icon and all four tray icons load from the resources");
+    }
+
+    // Start with Windows, run through the real code against a scratch key, so the
+    // user's actual start-up entries are never touched.
+    LogF(L"Start with Windows (in a scratch registry key):");
+    {
+        const wchar_t*    root = L"Software\\WinSwapperSelfTest";
+        const StartupKeys keys = { L"Software\\WinSwapperSelfTest\\Run",
+                                   L"Software\\WinSwapperSelfTest\\StartupApproved",
+                                   L"WinSwapper" };
+
+        // RegSetKeyValueW is not relied on to create a missing subkey.
+        const auto write = [](const wchar_t* sub, const wchar_t* name, DWORD type,
+                              const void* data, DWORD bytes) {
+            HKEY k = nullptr;
+            if (RegCreateKeyExW(HKEY_CURRENT_USER, sub, 0, nullptr, 0, KEY_SET_VALUE,
+                                nullptr, &k, nullptr) != ERROR_SUCCESS)
+                return false;
+            const bool ok = RegSetValueExW(k, name, 0, type, static_cast<const BYTE*>(data), bytes)
+                            == ERROR_SUCCESS;
+            RegCloseKey(k);
+            return ok;
+        };
+        const auto registered = [&keys](std::wstring& out) {
+            wchar_t buf[1024] = {};
+            DWORD   bytes     = sizeof(buf);
+            if (RegGetValueW(HKEY_CURRENT_USER, keys.run, keys.value, RRF_RT_REG_SZ,
+                             nullptr, buf, &bytes) != ERROR_SUCCESS)
+                return false;
+            out = buf;
+            return true;
+        };
+
+        RegDeleteTreeW(HKEY_CURRENT_USER, root);   // leftovers from an interrupted run
+        std::wstring value;
+
+        check(!IsStartupEnabled(keys) && !registered(value), L"off, with nothing written, until turned on");
+
+        const bool on = SetStartupEnabled(keys, true);
+        check(on && IsStartupEnabled(keys) && registered(value) && value == StartupCommand(),
+              L"turning it on registers this exe's quoted path");
+
+        // What Task Manager writes when an entry is disabled there.
+        const BYTE disabled[12] = { 3 };
+        const bool marked = write(keys.approved, keys.value, REG_BINARY, disabled, sizeof(disabled));
+        check(marked && !IsStartupEnabled(keys), L"disabled in Task Manager reads as off");
+
+        SetStartupEnabled(keys, true);
+        check(IsStartupEnabled(keys), L"turning it on again clears Task Manager's disabled flag");
+
+        SetStartupEnabled(keys, false);
+        check(!IsStartupEnabled(keys) && !registered(value), L"turning it off removes the entry");
+
+        const std::wstring other = L"\"C:\\Elsewhere\\winswapper.exe\"";
+        const bool elsewhere = write(keys.run, keys.value, REG_SZ, other.c_str(),
+                                     static_cast<DWORD>((other.size() + 1) * sizeof(wchar_t)));
+        check(elsewhere && !IsStartupEnabled(keys),
+              L"registered for a different copy of the exe reads as off for this one");
+
+        RegDeleteTreeW(HKEY_CURRENT_USER, root);
+        HKEY gone = nullptr;
+        const bool cleaned = RegOpenKeyExW(HKEY_CURRENT_USER, root, 0, KEY_READ, &gone) != ERROR_SUCCESS;
+        if (gone) RegCloseKey(gone);
+        check(cleaned, L"scratch key removed afterwards");
+    }
 
     // Everything from here needs somewhere to move a window to.
     if (mons.size() < 2)

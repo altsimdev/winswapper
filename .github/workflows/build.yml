@@ -60,7 +60,7 @@ jobs:
           # The binary cannot write to this step's console, so its results only land
           # in the log. Print it, or a failure would say "exited 1" and nothing about
           # which check broke.
-          $log = Join-Path $env:LOCALAPPDATA "WinSwapper\winswapper.log"
+          $log = Join-Path $env:LOCALAPPDATA "WinSwapper\winswapper-cli.log"
           if (Test-Path $log) { Get-Content $log }
 
           if ($rc -eq 3) { Write-Host "note: window-move tests skipped (single-display runner)" }

@@ -23,8 +23,8 @@ msbuild winswapper.sln /p:Configuration=Release /p:Platform=x64
 ```
 
 The binary lands in `build\x64\Release\winswapper.exe`. It has no runtime dependencies beyond
-Windows itself, and needs no installer — put it anywhere, or drop a shortcut in
-`shell:startup` to have it run at login.
+Windows itself, and needs no installer — put it anywhere. To have it run at sign-in, turn on
+*Start with Windows* in its tray menu.
 
 The project does not pin a toolset or an SDK: it asks for `$(DefaultPlatformToolset)` and Windows
 SDK `10.0`, which resolve to whatever that machine has installed (`v145` on Visual Studio 2026,
@@ -60,13 +60,22 @@ pwsh .github/release-notes.ps1 -Tag 1.04
 ## Use
 
 Run with no arguments and it goes to the notification area. Right-click the icon for *Rotate left*,
-*Rotate right*, *Open log*, *About* and *Exit*; double-click it to rotate left.
+*Rotate right*, *Start with Windows*, *Open log*, *About* and *Exit*; double-click it to rotate left.
+
+The icon pictures as many displays as are connected — one to four, and four for anything more — and
+redraws itself when you plug a display in or take one away. Hovering over it shows the exact count.
+
+*Start with Windows* is off until you turn it on. Ticking it registers this copy of the exe to start
+when you sign in, for your user only and without administrator rights; it then also appears in Task
+Manager's *Startup apps*. The checkmark reflects what will actually happen: it is clear if the entry
+was switched off in Task Manager, or if it points at a different copy of the exe, and ticking it then
+puts that right.
 
 The two hotkeys are registered independently, so if another application has claimed one of them the
 other still works — and the tray menu always does.
 
 There are also four command-line modes, which print to the console they were launched from and to
-the log:
+their own log file (see below):
 
 | Command | What it does |
 |---|---|
@@ -86,7 +95,13 @@ skipped the window-move tests for want of a second display, and 1 on a real fail
 exit 2 in every mode. The rotation arithmetic is checked regardless of displays, which is why CI
 runs it on a single-display runner.
 
-The log is at `%LOCALAPPDATA%\WinSwapper\winswapper.log`.
+Logs are in `%LOCALAPPDATA%\WinSwapper\`:
+
+- `winswapper.log` — the tray app's log, which *Open log* shows. It accumulates across runs; once it
+  passes 1 MB at start-up it is renamed to `winswapper.old.log` and a fresh one begins.
+- `winswapper-cli.log` — the latest command-line run only. It is a separate file because the tray
+  app keeps its own log open while it runs, which used to lock command-line runs out of a shared one
+  and lose their output.
 
 ## How it works
 
@@ -171,13 +186,15 @@ normal window over two maximized ones and checks they arrive in the same order.
 ```
 src/main.cpp      WinMain, hidden window, tray icon, hotkey, menu, message loop
 src/swapper.cpp   display and window enumeration, remap arithmetic, applying moves
-src/log.cpp       log file plus console output for the command-line modes
+src/log.cpp       log files plus console output for the command-line modes
+src/tray.cpp      which icon to show, and the Start with Windows setting
 res/app.manifest  Per-Monitor-V2 DPI awareness, common controls v6, asInvoker
-res/make-icon.ps1 regenerates res/app.ico
+res/make-icon.ps1 regenerates res/displays-1.ico to res/displays-4.ico
 ```
 
-`res/app.ico` is committed so the build needs no extra tooling, and `res/make-icon.ps1` is the
-script that produced it — the icon is not an opaque binary you have to take on trust.
+The icons are committed so the build needs no extra tooling, and `res/make-icon.ps1` is the script
+that produced them — they are not opaque binaries you have to take on trust. `displays-3.ico` is
+also the exe's own icon.
 
 ## License
 

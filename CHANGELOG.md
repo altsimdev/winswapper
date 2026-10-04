@@ -4,6 +4,15 @@ What changed in each release. When a version is tagged, the release workflow pub
 whose heading matches the tag as that release's notes - and refuses to publish a release that has
 no section here, so add the entry before pushing the tag.
 
+## Unreleased
+
+- **New:** *Start with Windows* in the tray menu, off by default. It registers WinSwapper for your
+  user only, and the checkmark stays accurate if you switch it off in Task Manager instead.
+- **New:** the tray icon pictures as many displays as are connected, and changes when you plug one
+  in or take one away. Hovering over it shows the count.
+- **Fix:** command-line runs (`--list`, `--dry-run`, `--selftest`) lost all their output while the
+  tray app was running. They now write their own log, `winswapper-cli.log`.
+
 ## 1.04 - 2026-10-04
 
 - **Fix:** maximized windows keep their order. Two maximized windows on one display used to arrive

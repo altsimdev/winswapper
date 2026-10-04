@@ -6,6 +6,7 @@
 #include "log.h"
 #include "resource.h"
 #include "swapper.h"
+#include "tray.h"
 
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -16,12 +17,63 @@ static const UINT kTrayId      = 1;
 static HINSTANCE g_inst           = nullptr;
 static HWND      g_hwnd           = nullptr;
 static HICON     g_icon           = nullptr;
+static bool      g_iconOwned      = false;   // false for the stock fallback, which is shared
+static int       g_iconDisplays   = 0;       // how many displays g_icon was chosen for
 static UINT      g_taskbarCreated = 0;
 static bool      g_leftOk         = false;
 static bool      g_rightOk        = false;
 static HANDLE    g_mutex          = nullptr;
 
 // ------------------------------------------------------------------ tray ----
+
+static void FillTip(NOTIFYICONDATAW& nid)
+{
+    swprintf_s(nid.szTip, L"WinSwapper - %d display%s - Ctrl+Alt+S rotates left, +Shift right",
+               g_iconDisplays, g_iconDisplays == 1 ? L"" : L"s");
+}
+
+// Points the tray icon at the picture of however many displays are connected, if
+// that has changed. `notify` is false only before the icon has been added.
+static void RefreshTrayIcon(bool notify)
+{
+    const int displays = static_cast<int>(EnumerateMonitors().size());
+    if (g_icon && displays == g_iconDisplays) return;
+
+    HICON icon  = static_cast<HICON>(LoadImageW(g_inst, MAKEINTRESOURCEW(TrayIconResource(displays)),
+                                                IMAGE_ICON,
+                                                GetSystemMetrics(SM_CXSMICON),
+                                                GetSystemMetrics(SM_CYSMICON),
+                                                LR_DEFAULTCOLOR));
+    bool  owned = true;
+    if (!icon)
+    {
+        if (g_icon) return;                              // keep the picture we have
+        icon  = LoadIconW(nullptr, IDI_APPLICATION);     // stock icon: shared, never destroyed
+        owned = false;
+    }
+
+    const HICON oldIcon  = g_icon;
+    const bool  oldOwned = g_iconOwned;
+    g_icon         = icon;
+    g_iconOwned    = owned;
+    g_iconDisplays = displays;
+
+    if (notify)
+    {
+        NOTIFYICONDATAW nid = {};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd   = g_hwnd;
+        nid.uID    = kTrayId;
+        nid.uFlags = NIF_ICON | NIF_TIP;
+        nid.hIcon  = g_icon;
+        FillTip(nid);
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+    LogF(L"Tray icon shows %d display(s).", displays);
+
+    // The shell keeps its own copy, so the old icon can go once it has the new one.
+    if (oldIcon && oldOwned) DestroyIcon(oldIcon);
+}
 
 static void AddTrayIcon()
 {
@@ -32,7 +84,7 @@ static void AddTrayIcon()
     nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon            = g_icon;
-    wcscpy_s(nid.szTip, L"WinSwapper - Ctrl+Alt+S rotates left, +Shift rotates right");
+    FillTip(nid);
 
     Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -86,6 +138,21 @@ static void DoRotate(Rotation dir)
     }
 }
 
+static void ToggleStartup()
+{
+    const bool enable = !IsStartupEnabled(kStartupKeys);
+    if (SetStartupEnabled(kStartupKeys, enable))
+    {
+        if (enable) LogF(L"Start with Windows turned on: %s", StartupCommand().c_str());
+        else        LogF(L"Start with Windows turned off.");
+        return;
+    }
+
+    LogF(L"Could not turn start with Windows %s, error %lu.", enable ? L"on" : L"off", GetLastError());
+    Balloon(enable ? L"Could not set WinSwapper to start with Windows."
+                   : L"Could not stop WinSwapper starting with Windows.", NIIF_WARNING);
+}
+
 static void OpenLog()
 {
     ShellExecuteW(nullptr, nullptr, L"notepad.exe", LogFilePath(), nullptr, SW_SHOWNORMAL);
@@ -123,11 +190,15 @@ static void ShowMenu()
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
-    // Mnemonics must stay unique across the whole menu - F, R, L, A, X - or Windows
+    // Mnemonics must stay unique across the whole menu - F, R, W, L, A, X - or Windows
     // only cycles the highlight between the clashing items instead of invoking one.
     AppendMenuW(menu, MF_STRING, IDM_LEFT,  L"Rotate le&ft\tCtrl+Alt+S");
     AppendMenuW(menu, MF_STRING, IDM_RIGHT, L"Rotate &right\tCtrl+Alt+Shift+S");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    // Read fresh each time the menu opens, so a change made in Task Manager or by
+    // another copy shows up here.
+    AppendMenuW(menu, MF_STRING | (IsStartupEnabled(kStartupKeys) ? MF_CHECKED : MF_UNCHECKED),
+                IDM_STARTUP, L"Start with &Windows");
     AppendMenuW(menu, MF_STRING, IDM_LOG,   L"Open &log");
     AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"&About");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -173,17 +244,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         switch (LOWORD(wp))
         {
-        case IDM_LEFT:  DoRotate(Rotation::Left);  break;
-        case IDM_RIGHT: DoRotate(Rotation::Right); break;
-        case IDM_LOG:   OpenLog();                 break;
-        case IDM_ABOUT: ShowAbout();               break;
-        case IDM_EXIT:  DestroyWindow(hwnd);       break;
+        case IDM_LEFT:    DoRotate(Rotation::Left);  break;
+        case IDM_RIGHT:   DoRotate(Rotation::Right); break;
+        case IDM_STARTUP: ToggleStartup();           break;
+        case IDM_LOG:     OpenLog();                 break;
+        case IDM_ABOUT:   ShowAbout();               break;
+        case IDM_EXIT:    DestroyWindow(hwnd);       break;
         default: break;
         }
         return 0;
 
     case WM_DISPLAYCHANGE:
         LogF(L"Display configuration changed.");
+        RefreshTrayIcon(true);
         return 0;
 
     case WM_DESTROY:
@@ -257,7 +330,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
 
     if (doHelp || badArg || strayReverse || doList || doDry || doSwapOnce || doSelfTest)
     {
-        LogInit(true, true);
+        LogInit(LogMode::Cli);
 
         int rc = 0;
         if (doHelp || badArg || strayReverse)
@@ -295,7 +368,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         return 0;
     }
 
-    LogInit(false, false);
+    LogInit(LogMode::Tray);
     LogF(L"WinSwapper started.");
 
     WNDCLASSEXW wc = {};
@@ -324,12 +397,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         return 1;
     }
 
-    g_icon = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
-                                           GetSystemMetrics(SM_CXSMICON),
-                                           GetSystemMetrics(SM_CYSMICON),
-                                           LR_DEFAULTCOLOR));
-    if (!g_icon) g_icon = LoadIconW(nullptr, IDI_APPLICATION);
-
+    RefreshTrayIcon(false);
     AddTrayIcon();
 
     // Registered separately so losing one combination to another app still leaves
@@ -369,6 +437,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+
+    if (g_icon && g_iconOwned) DestroyIcon(g_icon);
 
     LogF(L"WinSwapper exited.");
     LogShutdown();

@@ -98,17 +98,22 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\swapper.cpp" />
     <ClCompile Include="src\log.cpp" />
+    <ClCompile Include="src\tray.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\swapper.h" />
     <ClInclude Include="src\log.h" />
+    <ClInclude Include="src\tray.h" />
     <ClInclude Include="res\resource.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="res\winswapper.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="res\app.ico" />
+    <Image Include="res\displays-1.ico" />
+    <Image Include="res\displays-2.ico" />
+    <Image Include="res\displays-3.ico" />
+    <Image Include="res\displays-4.ico" />
     <None Include="res\app.manifest" />
     <None Include="res\make-icon.ps1" />
   </ItemGroup>
