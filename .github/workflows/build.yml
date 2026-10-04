@@ -109,7 +109,7 @@ jobs:
           # Only the exe ships; the pdb stays a CI artifact for crash dumps.
           New-Item -ItemType Directory -Force pkg | Out-Null
           Copy-Item artifact\winswapper.exe pkg\
-          Copy-Item README.md, LICENSE pkg\
+          Copy-Item README.md, LICENSE.txt pkg\
 
           $v = (Get-Item pkg\winswapper.exe).VersionInfo.FileVersion
           Write-Host "packaging winswapper.exe $v as $zip"

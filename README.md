@@ -159,4 +159,4 @@ script that produced it — the icon is not an opaque binary you have to take on
 
 ## License
 
-BSD 2-Clause. See [LICENSE](LICENSE).
+BSD 2-Clause. See [LICENSE.txt](LICENSE.txt).
