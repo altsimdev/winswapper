@@ -95,7 +95,7 @@ static void ShowAbout()
 {
     wchar_t msg[1024];
     swprintf_s(msg,
-               L"WinSwapper 1.03\n\n"
+               L"WinSwapper 1.04\n\n"
                L"Moves every ordinary window one display to the left or the right, with "
                L"the end display wrapping around. Each window keeps its size and its "
                L"position within its display.\n\n"
