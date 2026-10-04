@@ -45,7 +45,16 @@ tag, alongside a `.sha256` checksum. The zip holds the executable, this README a
 nothing to install.
 
 ```bash
-sha256sum -c winswapper-1.01-x64.zip.sha256
+sha256sum -c winswapper-1.04-x64.zip.sha256
+```
+
+Each release's notes are its section of [CHANGELOG.md](CHANGELOG.md), whose heading must match the
+tag — `## 1.05 - <date>`. The release workflow refuses to publish a tag that has no section, so write
+the entry before tagging. If it is missing, nothing gets published; add the entry and move the tag
+to the commit that has it. To preview a release's notes:
+
+```bash
+pwsh .github/release-notes.ps1 -Tag 1.04
 ```
 
 ## Use
