@@ -79,6 +79,10 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Fully static. The hybrid trick Release uses would need ucrtbased.dll, the
+           debug C runtime, which only exists where Visual Studio is installed - and
+           CI uploads Debug builds too. -->
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
@@ -87,10 +91,21 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- The "hybrid CRT", as Windows Terminal uses it. Left to MSBuild's default
+           (/MD), the exe needed VCRUNTIME140.dll, VCRUNTIME140_1.dll and
+           MSVCP140.dll from the Visual C++ Redistributable, which is not part of
+           Windows, so on a clean install it would not start. /MT links the
+           Visual C++ runtime into the exe instead, and swapping libucrt.lib for
+           ucrt.lib keeps the C runtime itself dynamic: that is the Universal CRT,
+           which ships with every Windows 10 and 11. 242 KB, against 354 KB for a
+           fully static build. check-dependencies.ps1 guards this in CI. -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <IgnoreSpecificDefaultLibraries>libucrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <AdditionalDependencies>ucrt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
 

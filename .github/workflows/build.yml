@@ -46,6 +46,11 @@ jobs:
           $exe = "build\x64\${{ matrix.configuration }}\winswapper.exe"
           if (-not (Test-Path $exe)) { throw "no binary at $exe" }
 
+          # Before running it: this machine has the Visual C++ Redistributable, so the
+          # exe would run here even if it needed it - which is how 1.06 and earlier
+          # shipped needing it. Check what it imports instead.
+          ./.github/check-dependencies.ps1 -Exe $exe
+
           & $exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "--help exited $LASTEXITCODE" }
 

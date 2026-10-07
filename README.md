@@ -22,9 +22,14 @@ build, or from a Developer Command Prompt / Developer PowerShell:
 msbuild winswapper.sln /p:Configuration=Release /p:Platform=x64
 ```
 
-The binary lands in `build\x64\Release\winswapper.exe`. It has no runtime dependencies beyond
-Windows itself, and needs no installer — put it anywhere. To have it run at sign-in, turn on
-*Start with Windows* in its tray menu.
+The binary lands in `build\x64\Release\winswapper.exe`. It needs nothing beyond Windows 10 or 11
+and no installer — put it anywhere. To have it run at sign-in, turn on *Start with Windows* in its
+tray menu.
+
+That holds because of how the runtime is linked. The Visual C++ runtime is built into the exe, while
+the C runtime it uses is the Universal CRT that ships with Windows 10 and 11 — the "hybrid CRT", set
+up in `winswapper.vcxproj`. Releases up to 1.06 left this at Visual Studio's default instead, and
+needed the Visual C++ Redistributable installed: on a clean Windows install they would not start.
 
 The project does not pin a toolset or an SDK: it asks for `$(DefaultPlatformToolset)` and Windows
 SDK `10.0`, which resolve to whatever that machine has installed (`v145` on Visual Studio 2026,
@@ -36,7 +41,14 @@ msbuild winswapper.sln /p:Configuration=Release /p:Platform=x64 /p:PlatformTools
 ```
 
 `.github/workflows/build.yml` builds both configurations on `windows-latest` for every push and
-pull request, smoke-tests the binary, and uploads it as an artifact.
+pull request, smoke-tests the binary, and uploads it as an artifact. Before running it, the smoke
+test lists the DLLs the exe imports and fails on any that do not ship with Windows. Simply running
+it there would prove nothing: GitHub's build machines have the Visual C++ Redistributable, which is
+how the problem above went unnoticed. To check a build locally:
+
+```bash
+pwsh .github/check-dependencies.ps1 -Exe build\x64\Release\winswapper.exe
+```
 
 ## Releases
 

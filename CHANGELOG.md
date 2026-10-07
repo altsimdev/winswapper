@@ -4,6 +4,12 @@ What changed in each release. When a version is tagged, the release workflow pub
 whose heading matches the tag as that release's notes - and refuses to publish a release that has
 no section here, so add the entry before pushing the tag.
 
+## Unreleased
+
+- **Fix:** WinSwapper no longer needs the Microsoft Visual C++ Redistributable. Every earlier release
+  did, and would not start on a Windows installation that lacked it ("VCRUNTIME140.dll was not
+  found"). It now needs nothing beyond Windows 10 or 11, and the build checks that this stays true.
+
 ## 1.06 - 2026-10-06
 
 - **New:** the hotkeys can be changed. *Edit settings* in the tray menu opens a settings file
