@@ -99,11 +99,13 @@
     <ClCompile Include="src\swapper.cpp" />
     <ClCompile Include="src\log.cpp" />
     <ClCompile Include="src\tray.cpp" />
+    <ClCompile Include="src\selftest.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\swapper.h" />
     <ClInclude Include="src\log.h" />
     <ClInclude Include="src\tray.h" />
+    <ClInclude Include="src\selftest.h" />
     <ClInclude Include="res\resource.h" />
   </ItemGroup>
   <ItemGroup>

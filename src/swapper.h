@@ -74,4 +74,8 @@ std::vector<bool> ApplyPlan(const std::vector<WindowRec>& plan, HWND self);
 
 SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir);
 void       ListAll(HWND self);
-int        SelfTest();
+
+// Diagnostics shared with the self-test.
+std::wstring   RectStr(const RECT& r);
+const wchar_t* DirName(Rotation dir);
+void           LogMonitors(const std::vector<MonitorRec>& mons);

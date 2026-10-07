@@ -90,10 +90,15 @@ are the only modes it applies to; combined with anything else, or given alone, i
 than being silently ignored. `--swap` is accepted as a synonym for `--rotate`, since that was its
 name before 1.01.
 
-`--selftest` exits 0 when every check ran and passed, 3 when it passed everything it could but
-skipped the window-move tests for want of a second display, and 1 on a real failure. Usage errors
-exit 2 in every mode. The rotation arithmetic is checked regardless of displays, which is why CI
-runs it on a single-display runner.
+`--selftest` opens test windows and moves them between your displays, which takes the focus for a
+few seconds. `--selftest --no-windows` skips just those tests: the rotation arithmetic, the icons,
+*Start with Windows* (exercised in a scratch registry key) and the remap round trips all still run,
+and nothing on screen is disturbed. Like `--reverse`, `--no-windows` is an error with any other mode.
+
+`--selftest` exits 0 when every check ran and passed, 3 when it passed everything it ran but skipped
+the window-move tests — because of `--no-windows`, or for want of a second display — and 1 on a
+real failure. Usage errors exit 2 in every mode. The rotation arithmetic is checked regardless of
+displays, which is why CI runs it on a single-display runner.
 
 Logs are in `%LOCALAPPDATA%\WinSwapper\`:
 

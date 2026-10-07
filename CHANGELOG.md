@@ -6,6 +6,8 @@ no section here, so add the entry before pushing the tag.
 
 ## Unreleased
 
+- **New:** `--selftest --no-windows` runs every check except the ones that open and move windows,
+  so it can run without disturbing anything on screen.
 - The exe is about 19 KB smaller: the three-display icon was embedded twice.
 
 ## 1.05 - 2026-10-04

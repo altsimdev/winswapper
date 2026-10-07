@@ -5,6 +5,7 @@
 
 #include "log.h"
 #include "resource.h"
+#include "selftest.h"
 #include "swapper.h"
 #include "tray.h"
 
@@ -288,10 +289,12 @@ static void PrintUsage()
     LogF(L"");
     LogF(L"  --reverse, --right         with --rotate or --dry-run, rotate right instead;");
     LogF(L"                             an error with anything else");
+    LogF(L"  --no-windows               with --selftest, skip the tests that open and move");
+    LogF(L"                             windows, so nothing on screen is disturbed");
     LogF(L"");
     LogF(L"--selftest exits 0 if every check ran and passed, 3 if it passed but skipped");
-    LogF(L"the window-move tests for want of a second display, and 1 on a failure.");
-    LogF(L"Usage errors exit 2.");
+    LogF(L"the window-move tests (for --no-windows, or with only one display), and 1 on a");
+    LogF(L"failure. Usage errors exit 2.");
     LogF(L"");
     LogF(L"Log file: %s", LogFilePath());
 }
@@ -301,7 +304,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     g_inst = inst;
 
     bool doList = false, doDry = false, doSwapOnce = false, doSelfTest = false, doHelp = false;
-    bool reverse = false;
+    bool reverse = false, noWindows = false;
     bool badArg = false;
 
     int     argc = 0;
@@ -316,33 +319,36 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
             else if (a == L"--rotate")   doSwapOnce = true;
             else if (a == L"--swap")     doSwapOnce = true;   // the pre-1.01 spelling
             else if (a == L"--selftest") doSelfTest = true;
-            // A modifier, not a mode: it picks the direction for --rotate/--dry-run.
+            // Modifiers, not modes: they change how --rotate/--dry-run or --selftest run.
             else if (a == L"--reverse" || a == L"--right") reverse = true;
+            else if (a == L"--no-windows") noWindows = true;
             else if (a == L"--help" || a == L"-h" || a == L"/?") doHelp = true;
             else                         badArg     = true;
         }
         LocalFree(argv);
     }
 
-    // --reverse only means something alongside --rotate or --dry-run. On its own it
-    // would otherwise fall through to tray mode and be silently ignored.
-    const bool strayReverse = reverse && !doDry && !doSwapOnce;
+    // A modifier only means something alongside the mode it modifies. Without one it
+    // would fall through to tray mode and be silently ignored, so it is an error.
+    const wchar_t* stray = nullptr;
+    if      (reverse && !doDry && !doSwapOnce) stray = L"--reverse needs --rotate or --dry-run to act on.";
+    else if (noWindows && !doSelfTest)         stray = L"--no-windows only applies to --selftest.";
 
-    if (doHelp || badArg || strayReverse || doList || doDry || doSwapOnce || doSelfTest)
+    if (doHelp || badArg || stray || doList || doDry || doSwapOnce || doSelfTest)
     {
         LogInit(LogMode::Cli);
 
         int rc = 0;
-        if (doHelp || badArg || strayReverse)
+        if (doHelp || badArg || stray)
         {
-            if (badArg)            LogF(L"Unrecognised argument.");
-            else if (strayReverse) LogF(L"--reverse needs --rotate or --dry-run to act on.");
+            if (badArg)     LogF(L"Unrecognised argument.");
+            else if (stray) LogF(L"%s", stray);
             PrintUsage();
-            rc = (badArg || strayReverse) ? 2 : 0;
+            rc = (badArg || stray) ? 2 : 0;
         }
         else if (doSelfTest)
         {
-            rc = SelfTest();
+            rc = SelfTest(!noWindows);
         }
         else if (doList)
         {
