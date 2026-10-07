@@ -9,6 +9,8 @@ no section here, so add the entry before pushing the tag.
 - **New:** `--selftest --no-windows` runs every check except the ones that open and move windows,
   so it can run without disturbing anything on screen.
 - The exe is about 19 KB smaller: the three-display icon was embedded twice.
+- **Fix:** the tray log's 1 MB cap is now checked while the app runs, not only when it starts, so a
+  copy left running for weeks can no longer grow its log without limit.
 
 ## 1.05 - 2026-10-04
 

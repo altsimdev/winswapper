@@ -103,7 +103,8 @@ displays, which is why CI runs it on a single-display runner.
 Logs are in `%LOCALAPPDATA%\WinSwapper\`:
 
 - `winswapper.log` — the tray app's log, which *Open log* shows. It accumulates across runs; once it
-  passes 1 MB at start-up it is renamed to `winswapper.old.log` and a fresh one begins.
+  passes 1 MB it is renamed to `winswapper.old.log` and a fresh one begins. That is checked as it
+  runs, not only at start-up, since with *Start with Windows* on it can run for weeks.
 - `winswapper-cli.log` — the latest command-line run only. It is a separate file because the tray
   app keeps its own log open while it runs, which used to lock command-line runs out of a shared one
   and lose their output.
