@@ -6,6 +6,7 @@
 #include "log.h"
 #include "resource.h"
 #include "selftest.h"
+#include "settings.h"
 #include "swapper.h"
 #include "tray.h"
 
@@ -21,16 +22,32 @@ static HICON     g_icon           = nullptr;
 static bool      g_iconOwned      = false;   // false for the stock fallback, which is shared
 static int       g_iconDisplays   = 0;       // how many displays g_icon was chosen for
 static UINT      g_taskbarCreated = 0;
-static bool      g_leftOk         = false;
+static bool      g_leftOk         = false;   // the left hotkey is registered
 static bool      g_rightOk        = false;
 static HANDLE    g_mutex          = nullptr;
+static Settings  g_settings       = DefaultSettings();
 
 // ------------------------------------------------------------------ tray ----
 
+// The tooltip carries text from the settings now, so it is truncated to fit rather
+// than formatted with swprintf_s, which would abort the process on overflow.
 static void FillTip(NOTIFYICONDATAW& nid)
 {
-    swprintf_s(nid.szTip, L"WinSwapper - %d display%s - Ctrl+Alt+S rotates left, +Shift right",
-               g_iconDisplays, g_iconDisplays == 1 ? L"" : L"s");
+    _snwprintf_s(nid.szTip, _TRUNCATE, L"WinSwapper - %d display%s\nLeft: %s\nRight: %s",
+                 g_iconDisplays, g_iconDisplays == 1 ? L"" : L"s",
+                 FormatHotkey(g_settings.rotateLeft).c_str(),
+                 FormatHotkey(g_settings.rotateRight).c_str());
+}
+
+static void UpdateTrayTip()
+{
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd   = g_hwnd;
+    nid.uID    = kTrayId;
+    nid.uFlags = NIF_TIP;
+    FillTip(nid);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 // Points the tray icon at the picture of however many displays are connected, if
@@ -111,15 +128,113 @@ static void Balloon(const wchar_t* text, DWORD infoFlag)
     nid.uFlags      = NIF_INFO;
     nid.dwInfoFlags = infoFlag;
     wcscpy_s(nid.szInfoTitle, L"WinSwapper");
-    wcscpy_s(nid.szInfo, text);
+    // Truncated rather than wcscpy_s'd: balloon text can now include hotkeys and
+    // program names from the settings, and wcscpy_s aborts on overflow.
+    wcsncpy_s(nid.szInfo, text, _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+// ---------------------------------------------------------- hotkeys, settings ---
+
+static void UnregisterHotkeys()
+{
+    if (g_leftOk)  UnregisterHotKey(g_hwnd, kHotkeyLeft);
+    if (g_rightOk) UnregisterHotKey(g_hwnd, kHotkeyRight);
+    g_leftOk = g_rightOk = false;
+}
+
+// Registers the hotkeys the settings ask for, each separately so losing one to
+// another application leaves the other working. Returns the ones that could not be
+// had, for the balloon, or an empty string.
+static std::wstring RegisterHotkeys()
+{
+    UnregisterHotkeys();
+
+    std::wstring lost;
+    const auto reg = [&lost](UINT id, const Hotkey& h, const wchar_t* dir, bool& ok) {
+        if (!h.On())
+        {
+            LogF(L"Rotating %s has no hotkey (turned off in settings).", dir);
+            return;
+        }
+        ok = RegisterHotKey(g_hwnd, id, h.mods | MOD_NOREPEAT, h.vk) != FALSE;
+        const DWORD err = GetLastError();
+        if (ok)
+        {
+            LogF(L"Hotkey %s rotates %s.", FormatHotkey(h).c_str(), dir);
+            return;
+        }
+        LogF(L"RegisterHotKey(%s) for rotating %s failed, error %lu.", FormatHotkey(h).c_str(), dir, err);
+        if (!lost.empty()) lost += L" and ";
+        lost += FormatHotkey(h);
+    };
+    reg(kHotkeyLeft,  g_settings.rotateLeft,  L"left",  g_leftOk);
+    reg(kHotkeyRight, g_settings.rotateRight, L"right", g_rightOk);
+    return lost;
+}
+
+// Logs what loading the settings found, and says so in a balloon when something
+// needs the user's attention - or, after an explicit reload, that it worked.
+static void ReportSettings(const std::vector<std::wstring>& problems, const std::wstring& lost,
+                           bool reloaded)
+{
+    for (const std::wstring& p : problems)
+        LogF(L"settings.ini %s", p.c_str());
+
+    wchar_t msg[256];
+    if (!problems.empty() || !lost.empty())
+    {
+        std::wstring text;
+        if (!problems.empty())
+            text = L"settings.ini has " + std::to_wstring(problems.size()) +
+                   L" problem(s); the rest was applied. See Open log.";
+        if (!lost.empty())
+            text += (text.empty() ? L"" : L"\n") + lost + L" is taken by another app. "
+                    L"Use the tray menu, or pick another in Edit settings.";
+        Balloon(text.c_str(), NIIF_WARNING);
+    }
+    else if (reloaded)
+    {
+        _snwprintf_s(msg, _TRUNCATE, L"Settings reloaded.\nLeft: %s   Right: %s\nIgnoring %zu program(s).",
+                     FormatHotkey(g_settings.rotateLeft).c_str(),
+                     FormatHotkey(g_settings.rotateRight).c_str(), g_settings.ignore.size());
+        Balloon(msg, NIIF_INFO);
+    }
+}
+
+static void LoadAndApplySettings(bool reloaded)
+{
+    std::vector<std::wstring> problems;
+    const std::wstring path = SettingsPath();
+    g_settings = LoadSettings(path, problems);
+
+    const bool exists = GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    LogF(L"Settings %s %s%s; ignoring %zu program(s).", reloaded ? L"reloaded from" : L"read from",
+         path.c_str(), exists ? L"" : L" (not created yet, so the defaults)", g_settings.ignore.size());
+
+    const std::wstring lost = RegisterHotkeys();
+    UpdateTrayTip();
+    ReportSettings(problems, lost, reloaded);
+}
+
+static void EditSettings()
+{
+    // Created with the defaults and comments on first use; never overwritten.
+    const std::wstring path = SettingsPath();
+    if (!WriteDefaultSettings(path))
+    {
+        LogF(L"Could not create %s, error %lu.", path.c_str(), GetLastError());
+        Balloon(L"Could not create the settings file. See Open log.", NIIF_WARNING);
+        return;
+    }
+    ShellExecuteW(nullptr, nullptr, L"notepad.exe", path.c_str(), nullptr, SW_SHOWNORMAL);
 }
 
 // ---------------------------------------------------------------- actions ---
 
 static void DoRotate(Rotation dir)
 {
-    const SwapResult r = PerformSwap(g_hwnd, false, dir);
+    const SwapResult r = PerformSwap(g_hwnd, false, dir, g_settings.ignore);
 
     if (r.monitors < 2)
     {
@@ -159,10 +274,18 @@ static void OpenLog()
     ShellExecuteW(nullptr, nullptr, L"notepad.exe", LogFilePath(), nullptr, SW_SHOWNORMAL);
 }
 
+static std::wstring HotkeyState(const Hotkey& h, bool registered)
+{
+    if (!h.On()) return L"off (in settings)";
+    return FormatHotkey(h) + (registered ? L"" : L" (UNAVAILABLE - taken by another app)");
+}
+
 static void ShowAbout()
 {
-    wchar_t msg[1024];
-    swprintf_s(msg,
+    // Truncated to fit rather than swprintf_s'd: two paths and two hotkeys from the
+    // settings make the length depend on things outside this code.
+    wchar_t msg[2048];
+    _snwprintf_s(msg, _TRUNCATE,
                L"WinSwapper 1.05\n\n"
                L"Moves every ordinary window one display to the left or the right, with "
                L"the end display wrapping around. Each window keeps its size and its "
@@ -173,12 +296,14 @@ static void ShowAbout()
                L"the cycle.\n\n"
                L"Rotate left:  %s\n"
                L"Rotate right: %s\n"
+               L"Ignoring: %zu program(s)\n\n"
+               L"Settings: %s\n"
                L"Log: %s\n\n"
-               L"Command line: --list, --dry-run, --rotate, --reverse, --selftest",
-               g_leftOk  ? L"Ctrl+Alt+S"
-                         : L"Ctrl+Alt+S (UNAVAILABLE - taken by another app)",
-               g_rightOk ? L"Ctrl+Alt+Shift+S"
-                         : L"Ctrl+Alt+Shift+S (UNAVAILABLE - taken by another app)",
+               L"Command line: --list, --dry-run, --rotate, --reverse, --selftest, --no-windows",
+               HotkeyState(g_settings.rotateLeft,  g_leftOk).c_str(),
+               HotkeyState(g_settings.rotateRight, g_rightOk).c_str(),
+               g_settings.ignore.size(),
+               SettingsPath().c_str(),
                LogFilePath());
     MessageBoxW(nullptr, msg, L"About WinSwapper", MB_OK | MB_ICONINFORMATION);
 }
@@ -191,15 +316,24 @@ static void ShowMenu()
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
 
-    // Mnemonics must stay unique across the whole menu - F, R, W, L, A, X - or Windows
-    // only cycles the highlight between the clashing items instead of invoking one.
-    AppendMenuW(menu, MF_STRING, IDM_LEFT,  L"Rotate le&ft\tCtrl+Alt+S");
-    AppendMenuW(menu, MF_STRING, IDM_RIGHT, L"Rotate &right\tCtrl+Alt+Shift+S");
+    // The hotkey shown beside each item is the one actually registered, so an item
+    // whose hotkey is turned off or taken shows none.
+    const std::wstring left  = std::wstring(L"Rotate le&ft") +
+        (g_leftOk  ? L"\t" + FormatHotkey(g_settings.rotateLeft)  : std::wstring());
+    const std::wstring right = std::wstring(L"Rotate &right") +
+        (g_rightOk ? L"\t" + FormatHotkey(g_settings.rotateRight) : std::wstring());
+
+    // Mnemonics must stay unique across the whole menu - F, R, W, E, D, L, A, X - or
+    // Windows only cycles the highlight between the clashing items.
+    AppendMenuW(menu, MF_STRING, IDM_LEFT,  left.c_str());
+    AppendMenuW(menu, MF_STRING, IDM_RIGHT, right.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     // Read fresh each time the menu opens, so a change made in Task Manager or by
     // another copy shows up here.
     AppendMenuW(menu, MF_STRING | (IsStartupEnabled(kStartupKeys) ? MF_CHECKED : MF_UNCHECKED),
                 IDM_STARTUP, L"Start with &Windows");
+    AppendMenuW(menu, MF_STRING, IDM_EDIT_SETTINGS,   L"&Edit settings");
+    AppendMenuW(menu, MF_STRING, IDM_RELOAD_SETTINGS, L"Reloa&d settings");
     AppendMenuW(menu, MF_STRING, IDM_LOG,   L"Open &log");
     AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"&About");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -248,6 +382,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_LEFT:    DoRotate(Rotation::Left);  break;
         case IDM_RIGHT:   DoRotate(Rotation::Right); break;
         case IDM_STARTUP: ToggleStartup();           break;
+        case IDM_EDIT_SETTINGS:   EditSettings();             break;
+        case IDM_RELOAD_SETTINGS: LoadAndApplySettings(true); break;
         case IDM_LOG:     OpenLog();                 break;
         case IDM_ABOUT:   ShowAbout();               break;
         case IDM_EXIT:    DestroyWindow(hwnd);       break;
@@ -262,8 +398,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_DESTROY:
         RemoveTrayIcon();
-        if (g_leftOk)  UnregisterHotKey(hwnd, kHotkeyLeft);
-        if (g_rightOk) UnregisterHotKey(hwnd, kHotkeyRight);
+        UnregisterHotkeys();
         PostQuitMessage(0);
         return 0;
 
@@ -281,7 +416,8 @@ static void PrintUsage()
     LogF(L"WinSwapper - rotate windows one display left or right.");
     LogF(L"");
     LogF(L"  winswapper.exe             run in the notification area");
-    LogF(L"                             Ctrl+Alt+S rotates left, Ctrl+Alt+Shift+S right");
+    LogF(L"                             %s rotates left, %s right",
+         FormatHotkey(g_settings.rotateLeft).c_str(), FormatHotkey(g_settings.rotateRight).c_str());
     LogF(L"  winswapper.exe --list      show displays and every window, included or not");
     LogF(L"  winswapper.exe --dry-run   compute the rotation and print it, move nothing");
     LogF(L"  winswapper.exe --rotate    perform one rotation and exit (--swap also works)");
@@ -296,6 +432,7 @@ static void PrintUsage()
     LogF(L"the window-move tests (for --no-windows, or with only one display), and 1 on a");
     LogF(L"failure. Usage errors exit 2.");
     LogF(L"");
+    LogF(L"Settings: %s", SettingsPath().c_str());
     LogF(L"Log file: %s", LogFilePath());
 }
 
@@ -338,6 +475,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     {
         LogInit(LogMode::Cli);
 
+        // The command-line modes honour the settings too: --list shows ignored
+        // programs, --rotate leaves them alone, and --help shows the real hotkeys.
+        std::vector<std::wstring> problems;
+        g_settings = LoadSettings(SettingsPath(), problems);
+        for (const std::wstring& p : problems)
+            LogF(L"settings.ini %s", p.c_str());
+
         int rc = 0;
         if (doHelp || badArg || stray)
         {
@@ -352,11 +496,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         }
         else if (doList)
         {
-            ListAll(nullptr);
+            ListAll(nullptr, g_settings.ignore);
         }
         else
         {
-            PerformSwap(nullptr, doDry, reverse ? Rotation::Right : Rotation::Left);
+            PerformSwap(nullptr, doDry, reverse ? Rotation::Right : Rotation::Left, g_settings.ignore);
         }
 
         LogF(L"(log: %s)", LogFilePath());
@@ -406,36 +550,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     RefreshTrayIcon(false);
     AddTrayIcon();
 
-    // Registered separately so losing one combination to another app still leaves
-    // the other working. Ctrl+Alt+S and Ctrl+Alt+Shift+S are distinct to
-    // RegisterHotKey, so holding Shift picks the reverse rotation on its own.
-    g_leftOk  = RegisterHotKey(g_hwnd, kHotkeyLeft,
-                               MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'S') != FALSE;
-    if (!g_leftOk)
-        LogF(L"RegisterHotKey(Ctrl+Alt+S) failed, error %lu.", GetLastError());
-
-    g_rightOk = RegisterHotKey(g_hwnd, kHotkeyRight,
-                               MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'S') != FALSE;
-    if (!g_rightOk)
-        LogF(L"RegisterHotKey(Ctrl+Alt+Shift+S) failed, error %lu.", GetLastError());
-
-    if (g_leftOk && g_rightOk)
-    {
-        LogF(L"Hotkeys registered: Ctrl+Alt+S rotates left, Ctrl+Alt+Shift+S rotates right.");
-    }
-    else if (!g_leftOk && !g_rightOk)
-    {
-        Balloon(L"Both Ctrl+Alt+S and Ctrl+Alt+Shift+S are taken by another app.\n"
-                L"Use the tray menu to rotate.", NIIF_WARNING);
-    }
-    else
-    {
-        Balloon(g_leftOk ? L"Ctrl+Alt+Shift+S is taken by another app.\n"
-                           L"Rotating right is still on the tray menu."
-                         : L"Ctrl+Alt+S is taken by another app.\n"
-                           L"Rotating left is still on the tray menu.",
-                NIIF_WARNING);
-    }
+    // Reads settings.ini and registers its hotkeys, each separately so losing one to
+    // another app leaves the other working. The defaults, Ctrl+Alt+S and
+    // Ctrl+Alt+Shift+S, are distinct to RegisterHotKey, so holding Shift picks the
+    // reverse rotation on its own.
+    LoadAndApplySettings(false);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0)

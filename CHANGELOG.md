@@ -6,6 +6,11 @@ no section here, so add the entry before pushing the tag.
 
 ## Unreleased
 
+- **New:** the hotkeys can be changed. *Edit settings* in the tray menu opens a settings file
+  (created on first use, with every option explained), and *Reload settings* applies it. A hotkey
+  can also be turned off.
+- **New:** an ignore list in the same file: programs whose windows always stay where they are while
+  everything else rotates around them.
 - **New:** `--selftest --no-windows` runs every check except the ones that open and move windows,
   so it can run without disturbing anything on screen.
 - The exe is about 19 KB smaller: the three-display icon was embedded twice.

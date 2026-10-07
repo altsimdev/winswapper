@@ -2,6 +2,7 @@
 
 #include "log.h"
 #include "resource.h"
+#include "settings.h"
 #include "swapper.h"
 #include "tray.h"
 
@@ -220,6 +221,167 @@ int SelfTest(bool windows)
         const bool cleaned = RegOpenKeyExW(HKEY_CURRENT_USER, root, 0, KEY_READ, &gone) != ERROR_SUCCESS;
         if (gone) RegCloseKey(gone);
         check(cleaned, L"scratch key removed afterwards");
+    }
+
+    // Settings: hotkey syntax, the file format, decoding, the default file, and the
+    // ignore list against real processes. Nothing here opens a window, and only a
+    // temporary file is written - never the real settings.ini.
+    LogF(L"Settings:");
+    {
+        struct Good { const wchar_t* text; UINT mods; UINT vk; };
+        const Good good[] = {
+            { L"Ctrl+Alt+S",               MOD_CONTROL | MOD_ALT,             'S'       },
+            { L" ctrl + alt + shift + s ", MOD_CONTROL | MOD_ALT | MOD_SHIFT, 'S'       },
+            { L"Control+Win+F12",          MOD_CONTROL | MOD_WIN,             VK_F12    },
+            { L"Alt+PageDown",             MOD_ALT,                           VK_NEXT   },
+            { L"Win+Shift+Left",           MOD_WIN | MOD_SHIFT,               VK_LEFT   },
+            { L"Ctrl+Alt+9",               MOD_CONTROL | MOD_ALT,             '9'       },
+            { L"Ctrl+Escape",              MOD_CONTROL,                       VK_ESCAPE },
+        };
+        bool parsed = true, roundTrip = true;
+        for (const Good& g : good)
+        {
+            Hotkey       h;
+            std::wstring why;
+            if (!ParseHotkey(g.text, h, why) || h.mods != g.mods || h.vk != g.vk)
+            {
+                parsed = false;
+                LogF(L"    not parsed as expected: '%s'", g.text);
+                continue;
+            }
+            Hotkey again;
+            if (!ParseHotkey(FormatHotkey(h), again, why) || !(again == h))
+            {
+                roundTrip = false;
+                LogF(L"    lost in a round trip: '%s' -> '%s'", g.text, FormatHotkey(h).c_str());
+            }
+        }
+        check(parsed, L"hotkeys parse: any case and order, spaces, F-keys, named keys, digits");
+        check(roundTrip, L"every hotkey formats back to text that parses to the same hotkey");
+
+        Hotkey       off;
+        std::wstring whyOff;
+        check(ParseHotkey(L"none", off, whyOff) && !off.On() && FormatHotkey(off) == L"none",
+              L"\"none\" turns a hotkey off");
+
+        const wchar_t* bad[] = { L"", L"S", L"Shift+S", L"Ctrl+Alt", L"Ctrl+Alt+S+T", L"Ctrl+Alt+F25",
+                                 L"Ctrl+Hyper+S", L"Ctrl++S", L"Ctrl+Alt+" };
+        bool refused = true;
+        for (const wchar_t* b : bad)
+        {
+            Hotkey       h;
+            std::wstring why;
+            if (ParseHotkey(b, h, why) || why.empty())
+            {
+                refused = false;
+                LogF(L"    accepted, or refused without a reason: '%s'", b);
+            }
+        }
+        check(refused, L"bad hotkeys are refused with a reason: no key, no Ctrl/Alt/Win, two keys, unknown names");
+
+        // One file with a mistake of every kind. What can be applied is; each mistake
+        // is reported once, with its line number.
+        const std::wstring sample =
+            L"; a comment\r\n"
+            L"\r\n"
+            L"[hotkeys]\r\n"
+            L"rotateleft  = Ctrl+Alt+F11\r\n"
+            L"RotateRight = Ctrl+Q+Z\r\n"
+            L"Speed = fast\r\n"
+            L"\r\n"
+            L"[Ignore]\r\n"
+            L"slack.exe\r\n"
+            L"Teams\r\n"
+            L"C:\\Program Files\\Foo\\Bar.EXE\r\n"
+            L"  \"quoted.exe\"  \r\n"
+            L"Name = value\r\n"
+            L"[Colours]\r\n"
+            L"red = 1\r\n";
+        std::vector<std::wstring> problems;
+        const Settings s = ParseSettings(sample, problems);
+        const Settings d = DefaultSettings();
+        for (const std::wstring& p : problems) LogF(L"    reported: %s", p.c_str());
+
+        const Hotkey f11 = { MOD_CONTROL | MOD_ALT, VK_F11 };
+        check(s.rotateLeft == f11 && s.rotateRight == d.rotateRight,
+              L"a good hotkey is taken and a bad one keeps its default; names and sections ignore case");
+        const std::vector<std::wstring> wantIgnore = { L"slack.exe", L"Teams.exe", L"Bar.EXE", L"quoted.exe" };
+        check(s.ignore == wantIgnore,
+              L"ignore entries lose their directory and quotes, and gain .exe when they have no extension");
+        check(problems.size() == 4,
+              L"four mistakes, four reports: a bad hotkey, an unknown setting, a setting under [Ignore], an unknown section");
+
+        std::vector<std::wstring> sameProblems;
+        const Settings same = ParseSettings(L"[Hotkeys]\nRotateLeft=Ctrl+Alt+S\nRotateRight=ctrl+alt+s\n",
+                                            sameProblems);
+        check(same.rotateLeft.On() && !same.rotateRight.On() && sameProblems.size() == 1,
+              L"the same hotkey twice turns the second off, and says so");
+
+        std::vector<std::wstring> strayProblems;
+        ParseSettings(L"RotateLeft = Ctrl+Alt+S\n", strayProblems);
+        check(strayProblems.size() == 1, L"a setting outside any [section] is reported");
+
+        // e-acute as UTF-8 (C3 A9) and as UTF-16 (E9 00), with and without a BOM.
+        const std::vector<unsigned char> u8bom = { 0xEF, 0xBB, 0xBF, 'a', 0xC3, 0xA9 };
+        const std::vector<unsigned char> u8    = { 'a', 0xC3, 0xA9 };
+        const std::vector<unsigned char> u16   = { 0xFF, 0xFE, 'a', 0, 0xE9, 0 };
+        const std::vector<unsigned char> ansi  = { 'a', 0xE9 };   // not valid UTF-8
+        check(DecodeSettingsBytes(u8bom) == L"a\u00E9" && DecodeSettingsBytes(u8) == L"a\u00E9" &&
+              DecodeSettingsBytes(u16) == L"a\u00E9",
+              L"settings decode from UTF-8 with or without a byte-order mark, and from UTF-16");
+        const std::wstring fallback = DecodeSettingsBytes(ansi);
+        check(fallback.size() == 2 && fallback[0] == L'a',
+              L"bytes that are not UTF-8 are read in the ANSI code page rather than refused");
+
+        wchar_t tmp[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, tmp);
+        const std::wstring path = std::wstring(tmp) + L"winswapper-selftest-settings.ini";
+        DeleteFileW(path.c_str());
+
+        std::vector<std::wstring> written;
+        const bool     wrote  = WriteDefaultSettings(path);
+        const Settings loaded = LoadSettings(path, written);
+        check(wrote && written.empty() && loaded.rotateLeft == d.rotateLeft &&
+              loaded.rotateRight == d.rotateRight && loaded.ignore.empty(),
+              L"the default file it writes reads back as exactly the defaults, with no problems");
+
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE)
+        {
+            const char edited[] = "[Ignore]\r\nkeep.exe\r\n";
+            DWORD n = 0;
+            WriteFile(f, edited, sizeof(edited) - 1, &n, nullptr);
+            CloseHandle(f);
+        }
+        std::vector<std::wstring> keptProblems;
+        const bool     again = WriteDefaultSettings(path);
+        const Settings kept  = LoadSettings(path, keptProblems);
+        check(again && kept.ignore.size() == 1 && kept.ignore[0] == L"keep.exe",
+              L"writing the default file never overwrites one the user has edited");
+
+        DeleteFileW(path.c_str());
+        std::vector<std::wstring> missingProblems;
+        const Settings missing = LoadSettings(path, missingProblems);
+        check(missingProblems.empty() && missing.rotateLeft == d.rotateLeft,
+              L"a missing settings file means the defaults, and is not a problem");
+
+        // Against real processes: this one, and the desktop's shell window.
+        const std::wstring me = ProgramName(GetCurrentProcessId());
+        check(CompareStringOrdinal(me.c_str(), -1, L"winswapper.exe", -1, TRUE) == CSTR_EQUAL,
+              L"a process's program name is its exe's file name");
+
+        if (HWND shell = GetShellWindow())
+        {
+            const std::wstring hit  = IgnoredBy(shell, { L"slack.exe", L"EXPLORER.EXE" });
+            const std::wstring miss = IgnoredBy(shell, { L"slack.exe" });
+            check(hit == L"EXPLORER.EXE" && miss.empty(),
+                  L"an ignore entry matches a real window's program regardless of case, and nothing else");
+        }
+        else
+        {
+            LogF(L"  (no shell window on this desktop, so matching a real window is not checked)");
+        }
     }
 
     // Everything from here needs somewhere to move a window to.

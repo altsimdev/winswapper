@@ -69,10 +69,12 @@ pwsh .github/check-version.ps1 -Exe build\x64\Release\winswapper.exe -Tag 1.05
 ## Use
 
 Run with no arguments and it goes to the notification area. Right-click the icon for *Rotate left*,
-*Rotate right*, *Start with Windows*, *Open log*, *About* and *Exit*; double-click it to rotate left.
+*Rotate right*, *Start with Windows*, *Edit settings*, *Reload settings*, *Open log*, *About* and
+*Exit*; double-click it to rotate left.
 
 The icon pictures as many displays as are connected — one to four, and four for anything more — and
-redraws itself when you plug a display in or take one away. Hovering over it shows the exact count.
+redraws itself when you plug a display in or take one away. Hovering over it shows the exact count
+and the hotkeys.
 
 *Start with Windows* is off until you turn it on. Ticking it registers this copy of the exe to start
 when you sign in, for your user only and without administrator rights; it then also appears in Task
@@ -82,6 +84,35 @@ puts that right.
 
 The two hotkeys are registered independently, so if another application has claimed one of them the
 other still works — and the tray menu always does.
+
+### Settings
+
+*Edit settings* opens `%LOCALAPPDATA%\WinSwapper\settings.ini` in Notepad, creating it first with the
+defaults and a comment explaining each setting. Until then there is no file and the defaults apply.
+After saving, choose *Reload settings* — no restart needed.
+
+```ini
+[Hotkeys]
+RotateLeft  = Ctrl+Alt+S
+RotateRight = Ctrl+Alt+Shift+S
+
+[Ignore]
+slack.exe
+```
+
+- **Hotkeys** are modifiers and a key joined with `+`. Modifiers are `Ctrl`, `Alt`, `Shift` and
+  `Win`, and at least one of `Ctrl`, `Alt` or `Win` is required, so a hotkey can never swallow
+  ordinary typing. Keys are `A`–`Z`, `0`–`9`, `F1`–`F24`, `Left`, `Right`, `Up`, `Down`, `Home`,
+  `End`, `PageUp`, `PageDown`, `Insert`, `Delete`, `Space`, `Tab`, `Enter` and `Esc`. `none` turns a
+  hotkey off.
+- **Ignore** lists programs whose windows are never moved, one per line, named as in the *Details*
+  tab of Task Manager; `.exe` may be left off. Their windows stay put while everything else rotates
+  around them. `--list` shows each ignored window and the line that caught it.
+
+A mistake affects only its own line: a bad hotkey keeps its default, and anything unusable is
+reported with its line number in the log and in a notification, while the rest of the file still
+applies. The file may be saved as UTF-8 (with or without a byte-order mark) or UTF-16. The
+command-line modes read it too, so `--help` shows the hotkeys actually in use.
 
 There are also four command-line modes, which print to the console they were launched from and to
 their own log file (see below):
@@ -190,8 +221,10 @@ normal window over two maximized ones and checks they arrive in the same order.
 - **Different DPI per display.** The app is Per-Monitor-V2 aware, so coordinates are real physical
   pixels. If displays run different scaling factors, applications will re-layout their contents on
   arrival, which the proportional mapping accounts for but cannot make invisible.
-- **The hotkeys are not configurable.** Ctrl+Alt+S and Ctrl+Alt+Shift+S are compiled in. If another
-  application owns one, the tray menu is the fallback.
+- **Settings apply when reloaded.** Editing `settings.ini` changes nothing until *Reload settings* or
+  a restart; the file is not watched.
+- **Store apps are ignored together.** The windows of packaged (Microsoft Store) apps all belong to
+  `ApplicationFrameHost.exe`, so ignoring one of them means ignoring all of them.
 - **Displays are matched by position, not identity.** Plugging in or unplugging a display changes
   the ordering, so a rotation begun on one arrangement and finished on another will not round-trip.
   This is why the two directions only cancel out while the display layout stays put.
@@ -202,7 +235,9 @@ normal window over two maximized ones and checks they arrive in the same order.
 src/main.cpp      WinMain, hidden window, tray icon, hotkey, menu, message loop
 src/swapper.cpp   display and window enumeration, remap arithmetic, applying moves
 src/log.cpp       log files plus console output for the command-line modes
+src/settings.cpp  settings.ini: hotkey syntax, the ignore list, reading and writing the file
 src/tray.cpp      which icon to show, and the Start with Windows setting
+src/selftest.cpp  --selftest, with --no-windows to skip everything that opens a window
 res/app.manifest  Per-Monitor-V2 DPI awareness, common controls v6, asInvoker
 res/make-icon.ps1 regenerates res/displays-1.ico to res/displays-4.ico
 ```

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cwchar>
 #include <utility>
 
 // ---------------------------------------------------------------- monitors --
@@ -191,6 +192,36 @@ static const wchar_t* Classify(HWND hwnd, HWND self, const std::wstring& cls)
     return nullptr;
 }
 
+std::wstring ProgramName(DWORD pid)
+{
+    // PROCESS_QUERY_LIMITED_INFORMATION is all the image name needs and, unlike
+    // fuller access, is usually granted even for elevated processes.
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p) return std::wstring();
+
+    wchar_t path[MAX_PATH * 4] = {};
+    DWORD   len = _countof(path);
+    const BOOL ok = QueryFullProcessImageNameW(p, 0, path, &len);
+    CloseHandle(p);
+    if (!ok) return std::wstring();
+
+    const wchar_t* name = wcsrchr(path, L'\\');
+    return name ? name + 1 : path;
+}
+
+std::wstring IgnoredBy(HWND hwnd, const std::vector<std::wstring>& ignore)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    const std::wstring program = ProgramName(pid);
+    if (program.empty()) return std::wstring();
+
+    for (const std::wstring& entry : ignore)
+        if (CompareStringOrdinal(entry.c_str(), -1, program.c_str(), -1, TRUE) == CSTR_EQUAL)
+            return entry;
+    return std::wstring();
+}
+
 // ------------------------------------------------------------- collecting ---
 
 int DestSlot(int slot, int count, Rotation dir)
@@ -222,6 +253,7 @@ struct CollectCtx
     Rotation                       dir      = Rotation::Left;
     POINT                          off      = { 0, 0 };
     std::vector<WindowRec>*        included = nullptr;
+    const std::vector<std::wstring>* ignore = nullptr;   // program names from settings
 
     // Only populated for --list.
     bool                                               wantExcluded = false;
@@ -245,6 +277,19 @@ static BOOL CALLBACK CollectProc(HWND hwnd, LPARAM lp)
     };
 
     if (const wchar_t* why = Classify(hwnd, ctx->self, cls)) { reject(why); return TRUE; }
+
+    // After the cheaper checks, so a hidden or tool window still reports that more
+    // basic reason. Naming the matching entry lets --list show which line did it.
+    if (ctx->ignore && !ctx->ignore->empty())
+    {
+        const std::wstring entry = IgnoredBy(hwnd, *ctx->ignore);
+        if (!entry.empty())
+        {
+            const std::wstring why = L"ignored in settings (" + entry + L")";
+            reject(why.c_str());
+            return TRUE;
+        }
+    }
 
     WindowRec w;
     w.hwnd      = hwnd;
@@ -448,6 +493,7 @@ std::vector<bool> ApplyPlan(const std::vector<WindowRec>& plan, HWND self)
 // ------------------------------------------------------------- operations ---
 
 static bool Prepare(HWND self, std::vector<MonitorRec>& mons, Rotation dir,
+                    const std::vector<std::wstring>& ignore,
                     std::vector<WindowRec>& plan,
                     std::vector<std::pair<std::wstring, std::wstring>>* excluded)
 {
@@ -460,6 +506,7 @@ static bool Prepare(HWND self, std::vector<MonitorRec>& mons, Rotation dir,
     ctx.dir          = dir;
     ctx.off          = WorkspaceOffset();
     ctx.included     = &plan;
+    ctx.ignore       = &ignore;
     ctx.excluded     = excluded;
     ctx.wantExcluded = excluded != nullptr;
 
@@ -509,14 +556,14 @@ static void LogPlanLine(const WindowRec& w, POINT off)
          w.title.c_str(), w.cls.c_str());
 }
 
-SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir)
+SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir, const std::vector<std::wstring>& ignore)
 {
     SwapResult res;
 
     std::vector<MonitorRec> mons;
     std::vector<WindowRec>  plan;
 
-    if (!Prepare(self, mons, dir, plan, nullptr))
+    if (!Prepare(self, mons, dir, ignore, plan, nullptr))
     {
         res.monitors = static_cast<int>(mons.size());
         LogF(L"Only %d display(s) detected - nothing to rotate.", res.monitors);
@@ -551,7 +598,7 @@ SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir)
     return res;
 }
 
-void ListAll(HWND self)
+void ListAll(HWND self, const std::vector<std::wstring>& ignore)
 {
     std::vector<MonitorRec> mons;
     std::vector<WindowRec>  plan;
@@ -560,7 +607,7 @@ void ListAll(HWND self)
     // Listing is direction-agnostic: the include/exclude decision and every
     // window's source display are the same either way. Only the destination
     // column differs, and the display table above shows both.
-    const bool ok = Prepare(self, mons, Rotation::Left, plan, &excluded);
+    const bool ok = Prepare(self, mons, Rotation::Left, ignore, plan, &excluded);
 
     LogF(L"---- list ----");
     LogMonitors(mons);

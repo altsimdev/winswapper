@@ -72,8 +72,17 @@ bool ApplyOne(const WindowRec& w);
 // windows were actually moved; each failure is logged.
 std::vector<bool> ApplyPlan(const std::vector<WindowRec>& plan, HWND self);
 
-SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir);
-void       ListAll(HWND self);
+// `ignore` holds program file names from the settings, as Settings::ignore keeps
+// them; windows belonging to those programs are left where they are.
+SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir, const std::vector<std::wstring>& ignore);
+void       ListAll(HWND self, const std::vector<std::wstring>& ignore);
+
+// The file name of a process's exe, such as "slack.exe", or empty if it cannot be
+// read. Windows of packaged (Store) apps belong to ApplicationFrameHost.exe.
+std::wstring ProgramName(DWORD pid);
+
+// The ignore-list entry matching the program that owns hwnd, or empty if none does.
+std::wstring IgnoredBy(HWND hwnd, const std::vector<std::wstring>& ignore);
 
 // Diagnostics shared with the self-test.
 std::wstring   RectStr(const RECT& r);
