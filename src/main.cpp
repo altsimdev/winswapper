@@ -286,7 +286,7 @@ static void ShowAbout()
     // settings make the length depend on things outside this code.
     wchar_t msg[2048];
     _snwprintf_s(msg, _TRUNCATE,
-               L"WinSwapper 1.06\n\n"
+               L"WinSwapper 1.07\n\n"
                L"Moves every ordinary window one display to the left or the right, with "
                L"the end display wrapping around. Each window keeps its size and its "
                L"position within its display.\n\n"
