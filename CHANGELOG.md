@@ -4,7 +4,7 @@ What changed in each release. When a version is tagged, the release workflow pub
 whose heading matches the tag as that release's notes - and refuses to publish a release that has
 no section here, so add the entry before pushing the tag.
 
-## Unreleased
+## 1.06 - 2026-10-06
 
 - **New:** the hotkeys can be changed. *Edit settings* in the tray menu opens a settings file
   (created on first use, with every option explained), and *Reload settings* applies it. A hotkey
