@@ -108,6 +108,11 @@ jobs:
           name: winswapper-x64-Release
           path: artifact
 
+      # Before anything is published: the exe must report the tag's version in every
+      # place a version shows. 1.02 shipped calling itself 1.01.
+      - name: Check the exe's version matches the tag
+        run: ./.github/check-version.ps1 -Exe artifact\winswapper.exe -Tag "${{ github.ref_name }}"
+
       - name: Assemble the zip
         id: pkg
         run: |

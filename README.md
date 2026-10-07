@@ -57,6 +57,15 @@ to the commit that has it. To preview a release's notes:
 pwsh .github/release-notes.ps1 -Tag 1.04
 ```
 
+It also refuses to publish an exe that does not report the tag's version everywhere a version shows:
+the file and product version strings and the numeric version in `res/winswapper.rc`, the About box
+in `src/main.cpp`, and the manifest. Release tags take the form `1.05`, whose numeric form is
+`1.0.5.0`. To check a build before tagging it:
+
+```bash
+pwsh .github/check-version.ps1 -Exe build\x64\Release\winswapper.exe -Tag 1.05
+```
+
 ## Use
 
 Run with no arguments and it goes to the notification area. Right-click the icon for *Rotate left*,
