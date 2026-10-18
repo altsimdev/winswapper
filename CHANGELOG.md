@@ -4,6 +4,13 @@ What changed in each release. When a version is tagged, the release workflow pub
 whose heading matches the tag as that release's notes - and refuses to publish a release that has
 no section here, so add the entry before pushing the tag.
 
+## Unreleased
+
+- **Fix:** dialogs move with their window. An open dialog, such as *File Open*, used to stay behind
+  while the window it belongs to moved to another display, which left that window unusable until
+  you found the dialog. Floating toolbars and palettes now come along too. Dialogs of a program on
+  the ignore list stay put with it.
+
 ## 1.07 - 2026-10-06
 
 - **Fix:** WinSwapper no longer needs the Microsoft Visual C++ Redistributable. Every earlier release

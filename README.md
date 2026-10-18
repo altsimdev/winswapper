@@ -180,10 +180,19 @@ return every display to itself, and that left-then-right and right-then-left are
 
 With two displays both directions are the same swap, which is the original behaviour unchanged.
 
-**Choosing the windows.** A window is moved only if it is visible, unowned, not a tool window,
-not DWM-cloaked, not a shell window, and not exclusive-fullscreen. The cloak check is the one that
+**Choosing the windows.** A window is moved only if it is visible, not a tool window, not
+DWM-cloaked, not a shell window, and not exclusive-fullscreen. The cloak check is the one that
 matters most: without it, windows belonging to *other virtual desktops* would get hauled onto the
 current one.
+
+Dialogs, floating toolbars and palettes are *owned* windows: each belongs to an application window,
+its owner. An owned window moves only when the window at the top of its owner chain moves too, so a
+dialog goes wherever its application goes — an open *File Open* dialog included, even while it
+blocks the window behind it — and stays wherever its application stays, ignored or not. That is
+decided once every window has been collected, because a dialog is stacked above its owner and so is
+reached first. Owned windows may be tool windows; an unowned tool window is never moved. Like every
+other window, an owned one rotates from the display it is on, so a dialog dragged onto a different
+display from its application stays one display apart from it.
 
 **Moving them.** Each window's rect is expressed as a fraction of its source display's work area
 and reapplied to the destination's, so layouts survive displays of different sizes. When the work
@@ -215,14 +224,23 @@ so they anchor the rest — and the window that had the focus gets it back. Alwa
 ever re-stacked among themselves, so nothing crosses between the two layers. The self-test stacks a
 normal window over two maximized ones and checks they arrive in the same order.
 
+A window's own dialogs are no anchor for it. Windows keeps an owned window above its owner, so the
+activation took them to the front with it, and putting the owner back takes them back too. The
+self-test checks this with a maximized window whose dialog is open, under a normal window that
+covered both.
+
 ## Known limitations
 
 - **Elevated windows cannot be moved.** A process running as you cannot reposition a window owned
   by a process running as administrator; Windows blocks it (UIPI). Those windows are skipped and
   counted, and a tray balloon reports how many. Running WinSwapper itself as administrator would
   fix it, at the cost of a UAC prompt every launch.
-- **Owned windows are skipped.** The filter matches Alt-Tab semantics, so the occasional
-  application whose main window is *owned* by another window will be left alone.
+- **Windows owned by a hidden window are skipped.** A few applications, mostly older ones, make
+  their main window *owned* by a hidden one. With nothing visible to travel with, those windows are
+  left alone.
+- **A minimized window's dialogs stay behind.** While a window is minimized, Windows hides the
+  dialogs it owns, so they cannot be told apart from windows hidden for good and are not moved.
+  Restoring the window brings them back on the display they were on.
 - **Only the current virtual desktop is touched.** A deliberate consequence of the cloak filter.
 - **Maximized windows flash as they move.** A maximized window has to be restored, moved and
   re-maximized, so it briefly appears at its restored size on the way. Its stacking position and

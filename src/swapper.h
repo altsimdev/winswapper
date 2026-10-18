@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 struct MonitorRec
@@ -31,6 +32,10 @@ struct WindowRec
     WinState        state   = WinState::Normal;
     int             srcSlot = -1;   // index into the left-to-right display list
     int             dstSlot = -1;
+
+    // For an owned window - a dialog, a floating toolbar - the window at the top of
+    // its owner chain. It moves only if that window moves too. nullptr otherwise.
+    HWND            owner   = nullptr;
 
     RECT targetRect   = {};         // remapped rect in screen coords (logging + normal moves)
     RECT targetNormal = {};         // remapped rcNormalPosition in workspace coords
@@ -65,6 +70,23 @@ RECT  ScreenToWorkspace(const RECT& r, POINT off);
 RECT RemapRect(const RECT& r, const RECT& srcWork, const RECT& dstWork, const RECT& dstBounds);
 
 bool ApplyOne(const WindowRec& w);
+
+// What a window left out of a rotation looks like in --list: its title (or
+// "(no title)") and its class, paired with the reason.
+using Excluded = std::vector<std::pair<std::wstring, std::wstring>>;
+
+// Drops each owned window whose owner is not in plan as well, so a dialog goes
+// wherever its application goes and stays wherever it stays. The order of what is
+// kept is unchanged. Dropped windows are added to excluded when it is given.
+void KeepOwnedWithOwners(std::vector<WindowRec>& plan, Excluded* excluded);
+
+// Every window a rotation would move, top to bottom, each with its destination -
+// the plan PerformSwap() applies. Fills mons; returns false when there are fewer
+// than two displays, and then plan is left empty. excluded, when given, collects
+// every window left out and why.
+bool PlanRotation(HWND self, Rotation dir, const std::vector<std::wstring>& ignore,
+                  std::vector<MonitorRec>& mons, std::vector<WindowRec>& plan,
+                  Excluded* excluded);
 
 // Moves every window in plan, then puts back the stacking order and the focused
 // window that re-maximizing disturbs. plan must still be in its original

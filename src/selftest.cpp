@@ -384,6 +384,40 @@ int SelfTest(bool windows)
         }
     }
 
+    // Owned windows - dialogs, floating palettes - move only with the window they
+    // belong to. Deciding that is bookkeeping on handles, so made-up ones do here;
+    // the window tests below run the same rule on real windows.
+    LogF(L"Owned windows:");
+    {
+        const auto fake = [](UINT_PTR n) { return reinterpret_cast<HWND>(n); };
+        const auto rec  = [](HWND h, HWND owner, const wchar_t* title) {
+            WindowRec r;
+            r.hwnd  = h;
+            r.owner = owner;
+            r.title = title;
+            r.cls   = L"Test";
+            return r;
+        };
+        const HWND app = fake(0x100), other = fake(0x200), gone = fake(0x300);
+
+        // Top to bottom, the way EnumWindows lists them: a dialog sits above its owner.
+        std::vector<WindowRec> plan = {
+            rec(fake(0x101), app,     L"dialog"),
+            rec(fake(0x301), gone,    L"stranded"),
+            rec(app,         nullptr, L"application"),
+            rec(other,       nullptr, L"other"),
+        };
+        Excluded excluded;
+        KeepOwnedWithOwners(plan, &excluded);
+
+        check(plan.size() == 3 && plan[0].hwnd == fake(0x101) && plan[1].hwnd == app &&
+              plan[2].hwnd == other,
+              L"a dialog moves when its owner does, in its place in the stacking order");
+        check(excluded.size() == 1 && excluded[0].first.find(L"stranded") == 0 &&
+              excluded[0].second == L"owned, and its owner stays",
+              L"a dialog whose owner stays is left out, and --list says why");
+    }
+
     // Everything from here needs somewhere to move a window to.
     if (mons.size() < 2)
     {
@@ -656,6 +690,140 @@ int SelfTest(bool windows)
         }
 
         for (HWND h : st) if (h) DestroyWindow(h);
+        PumpFor(100);
+    }
+
+    // 4. Dialogs. A dialog is owned by its application window and has to travel
+    //    with it - also while it is modal and the window behind it is disabled, and
+    //    also when that window is maximized, whose re-stacking must not leave the
+    //    dialog's application in front of a window that covered it. A window owned
+    //    by a hidden window has nothing to travel with and stays.
+    //
+    //    The plan comes from the real PlanRotation(), so the owner rules are what
+    //    is tested, and is then cut down to these windows so nothing else moves.
+    LogF(L"Dialogs:");
+    {
+        enum { kTop, kMaxDlg, kMaxApp, kDlg, kApp, kStranded, kHiddenOwner, kCount };
+        const wchar_t* names[kCount] = {
+            L"WinSwapper dialog test: normal window on top",
+            L"WinSwapper dialog test: dialog of the maximized window",
+            L"WinSwapper dialog test: maximized window, blocked by its dialog",
+            L"WinSwapper dialog test: dialog",
+            L"WinSwapper dialog test: window, blocked by its dialog",
+            L"WinSwapper dialog test: owned by a hidden window",
+            L"WinSwapper dialog test: hidden owner",
+        };
+
+        HWND h[kCount] = {};
+        const auto make = [&](int i, DWORD style, HWND owner, int x, int y, int cx, int cy) {
+            h[i] = CreateWindowExW(owner ? WS_EX_DLGMODALFRAME : 0, wc.lpszClassName, names[i],
+                                   style, A.work.left + x, A.work.top + y, cx, cy,
+                                   owner, nullptr, wc.hInstance, nullptr);
+            return h[i] != nullptr;
+        };
+        const DWORD dialog = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+
+        bool created = make(kApp,         WS_OVERLAPPEDWINDOW, nullptr,      100, 100, 500, 380) &&
+                       make(kMaxApp,      WS_OVERLAPPEDWINDOW, nullptr,      140, 140, 500, 380) &&
+                       make(kTop,         WS_OVERLAPPEDWINDOW, nullptr,      220, 120, 420, 300) &&
+                       make(kHiddenOwner, WS_OVERLAPPEDWINDOW, nullptr,      260, 260, 300, 200);
+        created = created &&
+                  make(kDlg,      dialog, h[kApp],         160, 160, 320, 200) &&
+                  make(kMaxDlg,   dialog, h[kMaxApp],      600, 300, 320, 200) &&
+                  make(kStranded, dialog, h[kHiddenOwner], 700, 100, 320, 200);
+        check(created, L"created the dialog test windows");
+
+        if (created)
+        {
+            for (int i = 0; i < kCount; ++i)
+                if (i != kHiddenOwner) ShowWindow(h[i], SW_SHOWNORMAL);
+            ShowWindow(h[kMaxApp], SW_MAXIMIZE);
+            PumpFor(250);
+
+            // Bottom first. Raising an owner raises its dialog with it, which gives
+            // top, its dialog, maximized, dialog, window, stranded.
+            const int raise[] = { kStranded, kApp, kMaxApp, kTop };
+            for (int i : raise)
+                SetWindowPos(h[i], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+            // What a modal dialog does to the window it belongs to.
+            EnableWindow(h[kApp],    FALSE);
+            EnableWindow(h[kMaxApp], FALSE);
+            PumpFor(400);
+
+            const std::vector<HWND> order = { h[kTop], h[kMaxDlg], h[kMaxApp], h[kDlg], h[kApp] };
+            const std::vector<int>  before = ZRanks(order);
+            check(before[0] >= 0 && before[0] < before[1] && before[1] < before[2] &&
+                  before[2] < before[3] && before[3] < before[4],
+                  L"precondition: each dialog is stacked directly above its window");
+
+            RECT strandedBefore = {};
+            GetWindowRect(h[kStranded], &strandedBefore);
+
+            std::vector<MonitorRec> planMons;
+            std::vector<WindowRec>  all, plan;
+            Excluded                excluded;
+            PlanRotation(nullptr, Rotation::Left, {}, planMons, all, &excluded);
+            for (const WindowRec& w : all)
+                for (HWND mine : h)
+                    if (w.hwnd == mine) plan.push_back(w);
+
+            const auto planned = [&plan](HWND hw) -> const WindowRec* {
+                for (const WindowRec& w : plan) if (w.hwnd == hw) return &w;
+                return nullptr;
+            };
+            const WindowRec* dlg    = planned(h[kDlg]);
+            const WindowRec* maxDlg = planned(h[kMaxDlg]);
+            check(plan.size() == 5 && dlg && maxDlg && planned(h[kApp]) && planned(h[kMaxApp]) &&
+                  planned(h[kTop]) && dlg->owner == h[kApp] && maxDlg->owner == h[kMaxApp],
+                  L"both dialogs are planned to move, each with its own window as owner");
+
+            bool told = false;
+            for (const auto& e : excluded)
+                if (e.first.find(names[kStranded]) == 0 && e.second == L"owned, and its owner stays")
+                    told = true;
+            check(!planned(h[kStranded]) && told,
+                  L"the window owned by a hidden window is left out, and --list says why");
+
+            const RECT dlgTarget    = dlg    ? dlg->targetRect    : RECT{};
+            const RECT maxDlgTarget = maxDlg ? maxDlg->targetRect : RECT{};
+
+            ApplyPlan(plan, nullptr);
+            PumpFor(500);
+
+            RECT gotDlg = {}, gotMaxDlg = {}, gotStranded = {};
+            GetWindowRect(h[kDlg],      &gotDlg);
+            GetWindowRect(h[kMaxDlg],   &gotMaxDlg);
+            GetWindowRect(h[kStranded], &gotStranded);
+
+            wchar_t msg[256];
+            swprintf_s(msg, L"the dialog landed at %s and the maximized window's dialog at %s (wanted %s, %s)",
+                       RectStr(gotDlg).c_str(), RectStr(gotMaxDlg).c_str(),
+                       RectStr(dlgTarget).c_str(), RectStr(maxDlgTarget).c_str());
+            check(EqualRect(&gotDlg, &dlgTarget) && EqualRect(&gotMaxDlg, &maxDlgTarget), msg);
+
+            const auto onB = [&B](HWND hw) {
+                return MonitorFromWindow(hw, MONITOR_DEFAULTTONEAREST) == B.handle;
+            };
+            check(onB(h[kDlg]) && onB(h[kApp]) && onB(h[kMaxDlg]) && onB(h[kMaxApp]) &&
+                  IsZoomed(h[kMaxApp]) != FALSE,
+                  L"both windows reached the target display with their dialogs, the maximized one still maximized");
+
+            swprintf_s(msg, L"the window owned by a hidden window stayed at %s",
+                       RectStr(gotStranded).c_str());
+            check(EqualRect(&gotStranded, &strandedBefore) != FALSE, msg);
+
+            const std::vector<int> after = ZRanks(order);
+            swprintf_s(msg, L"stacking kept: top, dialog, maximized, dialog, window "
+                            L"(z-ranks before %d,%d,%d,%d,%d; after %d,%d,%d,%d,%d)",
+                       before[0], before[1], before[2], before[3], before[4],
+                       after[0], after[1], after[2], after[3], after[4]);
+            check(after[0] >= 0 && after[0] < after[1] && after[1] < after[2] &&
+                  after[2] < after[3] && after[3] < after[4], msg);
+        }
+
+        // Destroying an owner destroys what it owns, so check before each call.
+        for (HWND hw : h) if (hw && IsWindow(hw)) DestroyWindow(hw);
         PumpFor(100);
     }
 

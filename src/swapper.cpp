@@ -172,15 +172,19 @@ std::wstring RectStr(const RECT& r)
     return b;
 }
 
-// Cheap rejections first. Returns nullptr when the window is a swap candidate.
-static const wchar_t* Classify(HWND hwnd, HWND self, const std::wstring& cls)
+// Cheap rejections first. Returns nullptr when the window is a swap candidate. An
+// owned window can be one too, but it moves only with its owner - see
+// KeepOwnedWithOwners().
+static const wchar_t* Classify(HWND hwnd, HWND self, const std::wstring& cls, bool owned)
 {
     if (hwnd == self)                          return L"self";
     if (!IsWindowVisible(hwnd))                return L"not visible";
-    if (GetWindow(hwnd, GW_OWNER) != nullptr)  return L"owned window";
 
+    // An unowned tool window belongs to no application window: it is part of the
+    // shell, a notification, a helper. An owned one, such as a floating palette,
+    // goes wherever its owner goes.
     const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    if (ex & WS_EX_TOOLWINDOW)                 return L"tool window";
+    if ((ex & WS_EX_TOOLWINDOW) && !owned)     return L"tool window";
 
     // The filter that matters most: without it we would haul suspended UWP apps and,
     // worse, windows living on other virtual desktops onto the current one.
@@ -256,27 +260,28 @@ struct CollectCtx
     const std::vector<std::wstring>* ignore = nullptr;   // program names from settings
 
     // Only populated for --list.
-    bool                                               wantExcluded = false;
-    std::vector<std::pair<std::wstring, std::wstring>>* excluded    = nullptr;
+    Excluded*                      excluded = nullptr;
 };
+
+static std::wstring ExcludedName(std::wstring title, const std::wstring& cls)
+{
+    if (title.empty()) title = L"(no title)";
+    return title + L"  [" + cls + L"]";
+}
 
 static BOOL CALLBACK CollectProc(HWND hwnd, LPARAM lp)
 {
     auto* ctx = reinterpret_cast<CollectCtx*>(lp);
 
-    const std::wstring cls = ClassOf(hwnd);
+    const std::wstring cls   = ClassOf(hwnd);
+    const HWND         owner = GetWindow(hwnd, GW_OWNER);
 
     auto reject = [&](const wchar_t* why) {
-        if (ctx->wantExcluded && ctx->excluded)
-        {
-            std::wstring who = TitleOf(hwnd);
-            if (who.empty()) who = L"(no title)";
-            who += L"  [" + cls + L"]";
-            ctx->excluded->emplace_back(std::move(who), why);
-        }
+        if (ctx->excluded)
+            ctx->excluded->emplace_back(ExcludedName(TitleOf(hwnd), cls), why);
     };
 
-    if (const wchar_t* why = Classify(hwnd, ctx->self, cls)) { reject(why); return TRUE; }
+    if (const wchar_t* why = Classify(hwnd, ctx->self, cls, owner != nullptr)) { reject(why); return TRUE; }
 
     // After the cheaper checks, so a hidden or tool window still reports that more
     // basic reason. Naming the matching entry lets --list show which line did it.
@@ -296,6 +301,14 @@ static BOOL CALLBACK CollectProc(HWND hwnd, LPARAM lp)
     w.cls       = cls;
     w.title     = TitleOf(hwnd);
     w.wp.length = sizeof(w.wp);
+
+    // The top of the chain, so a dialog opened from a dialog follows the
+    // application window that both belong to.
+    if (owner)
+    {
+        const HWND root = GetAncestor(hwnd, GA_ROOTOWNER);
+        w.owner = (root && root != hwnd) ? root : owner;
+    }
 
     if (!GetWindowPlacement(hwnd, &w.wp)) { reject(L"no placement"); return TRUE; }
     if (!GetWindowRect(hwnd, &w.rect))    { reject(L"no rect");      return TRUE; }
@@ -416,6 +429,13 @@ bool ApplyOne(const WindowRec& w)
     return SetWindowPlacement(w.hwnd, &wp) != FALSE;
 }
 
+static bool OwnedBy(HWND h, HWND owner)
+{
+    for (HWND o = GetWindow(h, GW_OWNER); o; o = GetWindow(o, GW_OWNER))
+        if (o == owner) return true;
+    return false;
+}
+
 static void RestoreStacking(const std::vector<WindowRec>& plan, const std::vector<bool>& applied,
                             HWND foreground, HWND self)
 {
@@ -428,6 +448,11 @@ static void RestoreStacking(const std::vector<WindowRec>& plan, const std::vecto
     // makes them reliable anchors: every window moved by a path that can disturb
     // the stacking goes back directly beneath the plan window that was above it.
     // Working top to bottom means that window has always been put back already.
+    //
+    // The exception is a window's own dialogs and palettes. Windows keeps an owned
+    // window above its owner, so activation took them to the front along with it,
+    // and putting the owner back takes them back too. They are skipped as its
+    // anchors - one would leave the owner, and itself, in front.
     //
     // Only maximized and minimized windows are re-stacked, and not merely because
     // they are the ones disturbed. SetWindowPos here is synchronous, so it waits on
@@ -452,6 +477,7 @@ static void RestoreStacking(const std::vector<WindowRec>& plan, const std::vecto
         HWND       above = nullptr;
         for (size_t j = i; j-- > 0; )
         {
+            if (OwnedBy(plan[j].hwnd, plan[i].hwnd)) continue;
             if (topmost(plan[j].hwnd) == band) { above = plan[j].hwnd; break; }
         }
 
@@ -492,25 +518,45 @@ std::vector<bool> ApplyPlan(const std::vector<WindowRec>& plan, HWND self)
 
 // ------------------------------------------------------------- operations ---
 
-static bool Prepare(HWND self, std::vector<MonitorRec>& mons, Rotation dir,
-                    const std::vector<std::wstring>& ignore,
-                    std::vector<WindowRec>& plan,
-                    std::vector<std::pair<std::wstring, std::wstring>>* excluded)
+void KeepOwnedWithOwners(std::vector<WindowRec>& plan, Excluded* excluded)
 {
+    // Decided only once everything is collected: an owned window sits above its
+    // owner, so EnumWindows reaches the dialog before the window it belongs to.
+    std::vector<HWND> moving;
+    for (const WindowRec& w : plan)
+        if (!w.owner) moving.push_back(w.hwnd);
+
+    std::vector<WindowRec> kept;
+    kept.reserve(plan.size());
+    for (WindowRec& w : plan)
+    {
+        if (!w.owner || std::find(moving.begin(), moving.end(), w.owner) != moving.end())
+            kept.push_back(std::move(w));
+        else if (excluded)
+            excluded->emplace_back(ExcludedName(w.title, w.cls), L"owned, and its owner stays");
+    }
+    plan.swap(kept);
+}
+
+bool PlanRotation(HWND self, Rotation dir, const std::vector<std::wstring>& ignore,
+                  std::vector<MonitorRec>& mons, std::vector<WindowRec>& plan,
+                  Excluded* excluded)
+{
+    plan.clear();
     mons = EnumerateMonitors();
     if (mons.size() < 2) return false;
 
     CollectCtx ctx;
-    ctx.self         = self;
-    ctx.mons         = &mons;
-    ctx.dir          = dir;
-    ctx.off          = WorkspaceOffset();
-    ctx.included     = &plan;
-    ctx.ignore       = &ignore;
-    ctx.excluded     = excluded;
-    ctx.wantExcluded = excluded != nullptr;
+    ctx.self     = self;
+    ctx.mons     = &mons;
+    ctx.dir      = dir;
+    ctx.off      = WorkspaceOffset();
+    ctx.included = &plan;
+    ctx.ignore   = &ignore;
+    ctx.excluded = excluded;
 
     EnumWindows(CollectProc, reinterpret_cast<LPARAM>(&ctx));
+    KeepOwnedWithOwners(plan, excluded);
     return true;
 }
 
@@ -549,11 +595,13 @@ static void LogPlanLine(const WindowRec& w, POINT off)
                     ? w.rect
                     : WorkspaceToScreen(w.wp.rcNormalPosition, off);
 
-    LogF(L"  %-9s [%d->%d] %s -> %s  \"%s\"  [%s]",
+    const std::wstring owner = w.owner ? L"  owned by [" + ClassOf(w.owner) + L"]" : std::wstring();
+
+    LogF(L"  %-9s [%d->%d] %s -> %s  \"%s\"  [%s]%s",
          StateName(w.state), w.srcSlot, w.dstSlot,
          RectStr(from).c_str(),
          RectStr(w.targetRect).c_str(),
-         w.title.c_str(), w.cls.c_str());
+         w.title.c_str(), w.cls.c_str(), owner.c_str());
 }
 
 SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir, const std::vector<std::wstring>& ignore)
@@ -563,7 +611,7 @@ SwapResult PerformSwap(HWND self, bool dryRun, Rotation dir, const std::vector<s
     std::vector<MonitorRec> mons;
     std::vector<WindowRec>  plan;
 
-    if (!Prepare(self, mons, dir, ignore, plan, nullptr))
+    if (!PlanRotation(self, dir, ignore, mons, plan, nullptr))
     {
         res.monitors = static_cast<int>(mons.size());
         LogF(L"Only %d display(s) detected - nothing to rotate.", res.monitors);
@@ -602,12 +650,12 @@ void ListAll(HWND self, const std::vector<std::wstring>& ignore)
 {
     std::vector<MonitorRec> mons;
     std::vector<WindowRec>  plan;
-    std::vector<std::pair<std::wstring, std::wstring>> excluded;
+    Excluded                excluded;
 
     // Listing is direction-agnostic: the include/exclude decision and every
     // window's source display are the same either way. Only the destination
     // column differs, and the display table above shows both.
-    const bool ok = Prepare(self, mons, Rotation::Left, ignore, plan, &excluded);
+    const bool ok = PlanRotation(self, Rotation::Left, ignore, mons, plan, &excluded);
 
     LogF(L"---- list ----");
     LogMonitors(mons);
