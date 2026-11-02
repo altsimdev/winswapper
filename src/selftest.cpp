@@ -384,6 +384,83 @@ int SelfTest(bool windows)
         }
     }
 
+    // The log copes with a file it cannot open: what it could not write is kept, and
+    // written after a note naming the error as soon as the file opens. Run against a
+    // scratch file this test holds locked, never the real log.
+    LogF(L"Log file:");
+    {
+        wchar_t tmp[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, tmp);
+        const std::wstring path = std::wstring(tmp) + L"winswapper-selftest.log";
+
+        // Held with no sharing at all, the way a program that has a file open can.
+        const auto lock = [&path]() {
+            return CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        };
+        const auto readBack = [&path]() {
+            std::vector<unsigned char> bytes;
+            HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (f == INVALID_HANDLE_VALUE) return std::wstring();
+            unsigned char buf[4096];
+            DWORD n = 0;
+            while (ReadFile(f, buf, sizeof(buf), &n, nullptr) && n > 0)
+                bytes.insert(bytes.end(), buf, buf + n);
+            CloseHandle(f);
+            return DecodeSettingsBytes(bytes);
+        };
+
+        HANDLE  held = lock();
+        LogSink sink;
+        sink.path = path;
+        check(held != INVALID_HANDLE_VALUE && !sink.Open() && sink.error == ERROR_SHARING_VIOLATION &&
+              !sink.Problem().empty(),
+              L"a log file another program holds is found shut, and the reason is kept");
+
+        sink.Write(L"[00:00:01.000] one\r\n");
+        sink.Write(L"[00:00:02.000] two\r\n");
+        check(!sink.IsOpen() && sink.kept.size() == 2, L"lines logged while it is shut are kept");
+
+        if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
+        sink.Write(L"[00:00:03.000] three\r\n");
+        const bool recovered = sink.IsOpen() && sink.Problem().empty() && sink.kept.empty();
+        sink.Close();
+
+        const std::wstring text  = readBack();
+        const size_t       note  = text.find(L"could not be opened");
+        const size_t       why   = text.find(L"error 32");
+        const size_t       one   = text.find(L"] one");
+        const size_t       two   = text.find(L"] two");
+        const size_t       three = text.find(L"] three");
+        check(recovered && note != std::wstring::npos && why != std::wstring::npos &&
+              one != std::wstring::npos && two != std::wstring::npos && three != std::wstring::npos &&
+              note < one && one < two && two < three,
+              L"once it opens: a note naming the error, then the kept lines in order, then the new one");
+
+        // A file shut for days must not eat memory: past the cap, lines are counted
+        // instead, and the note says how many were lost.
+        held = lock();
+        LogSink small;
+        small.path      = path;
+        small.keepBytes = 40;   // room for two of these 20-byte lines
+        small.Write(L"[00:00:01.000] one\r\n");
+        small.Write(L"[00:00:02.000] two\r\n");
+        small.Write(L"[00:00:03.000] six\r\n");
+        const bool capped = !small.IsOpen() && small.kept.size() == 2 && small.dropped == 1;
+        if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
+        small.Open();
+        small.Close();
+
+        const std::wstring capText = readBack();
+        check(capped && capText.find(L"] two") != std::wstring::npos &&
+              capText.find(L"] six") == std::wstring::npos &&
+              capText.find(L"1 more line(s)") != std::wstring::npos,
+              L"past the memory cap, later lines are counted, and the note says how many were lost");
+
+        DeleteFileW(path.c_str());
+    }
+
     // Owned windows - dialogs, floating palettes - move only with the window they
     // belong to. Deciding that is bookkeeping on handles, so made-up ones do here;
     // the window tests below run the same rule on real windows.

@@ -10,6 +10,11 @@ no section here, so add the entry before pushing the tag.
   while the window it belongs to moved to another display, which left that window unusable until
   you found the dialog. Floating toolbars and palettes now come along too. Dialogs of a program on
   the ignore list stay put with it.
+- **Fix:** the tray log could stay empty for a whole run. If the file could not be opened when
+  WinSwapper started - another program holding it, say - nothing was written until the next
+  restart, and nothing said so. Now WinSwapper keeps what it logs meanwhile and keeps trying. Once
+  the file opens, a note says what went wrong, followed by everything kept. Until then, *About* and
+  *Open log* say the log is not being written, and why.
 
 ## 1.07 - 2026-10-06
 

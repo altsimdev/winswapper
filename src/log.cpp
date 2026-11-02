@@ -2,9 +2,8 @@
 
 #include <cstdarg>
 #include <cwchar>
-#include <vector>
 
-static HANDLE  g_file = INVALID_HANDLE_VALUE;
+static LogSink g_sink;
 static HANDLE  g_con  = INVALID_HANDLE_VALUE;
 static wchar_t g_path[MAX_PATH] = {};
 
@@ -45,32 +44,151 @@ static bool RollOver()
     return MoveFileExW(g_path, old, MOVEFILE_REPLACE_EXISTING) != FALSE;
 }
 
-static void OpenLogFile(bool cli)
+static std::string ToUtf8(const std::wstring& s)
 {
-    const DWORD access = cli ? GENERIC_WRITE : FILE_APPEND_DATA;
-    const DWORD disp   = cli ? CREATE_ALWAYS : OPEN_ALWAYS;
+    const int need = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                                         nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(need > 0 ? need : 0), '\0');
+    if (need > 0)
+        WideCharToMultiByte(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
+                            &out[0], need, nullptr, nullptr);
+    return out;
+}
 
-    g_file = CreateFileW(g_path, access, FILE_SHARE_READ, nullptr, disp,
-                         FILE_ATTRIBUTE_NORMAL, nullptr);
+static std::wstring Stamp()
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t b[32];
+    swprintf_s(b, L"[%02u:%02u:%02u.%03u] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    return b;
+}
 
-    if (g_file != INVALID_HANDLE_VALUE)
+// The system's wording for a Windows error, without its closing full stop.
+static std::wstring ErrorText(DWORD err)
+{
+    wchar_t*    buf = nullptr;
+    const DWORD n   = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                     FORMAT_MESSAGE_IGNORE_INSERTS,
+                                     nullptr, err, 0, reinterpret_cast<wchar_t*>(&buf), 0, nullptr);
+    std::wstring s = (n && buf) ? std::wstring(buf, n) : std::wstring(L"unknown error");
+    if (buf) LocalFree(buf);
+    while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' || s.back() == L' ' || s.back() == L'.'))
+        s.pop_back();
+    return s;
+}
+
+// --------------------------------------------------------------- LogSink ---
+
+static void Put(HANDLE file, const std::string& bytes)
+{
+    DWORD written = 0;
+    if (!bytes.empty())
+        WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+}
+
+bool LogSink::Open()
+{
+    if (IsOpen()) return true;
+
+    const DWORD access = append ? FILE_APPEND_DATA : GENERIC_WRITE;
+    const DWORD disp   = append ? OPEN_ALWAYS      : CREATE_ALWAYS;
+    file = CreateFileW(path.c_str(), access, FILE_SHARE_READ, nullptr, disp,
+                       FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
     {
-        LARGE_INTEGER size = {};
-        if (GetFileSizeEx(g_file, &size) && size.QuadPart == 0)
+        const DWORD err = GetLastError();
+        if (error == 0) GetLocalTime(&since);   // the start of this spell
+        error = err ? err : ERROR_GEN_FAILURE;
+        return false;
+    }
+
+    LARGE_INTEGER size = {};
+    if (GetFileSizeEx(file, &size) && size.QuadPart == 0)
+    {
+        // BOM so the log opens as UTF-8 in Notepad and Get-Content alike.
+        // Written to any new file, not only truncated ones, since the tray
+        // log is now created fresh rather than inherited from a CLI run.
+        Put(file, "\xEF\xBB\xBF");
+    }
+    else
+    {
+        SetFilePointer(file, 0, nullptr, FILE_END);
+    }
+
+    if (error != 0)
+    {
+        // First say what happened, so the kept lines' older timestamps make sense.
+        wchar_t note[1024];
+        _snwprintf_s(note, _TRUNCATE,
+                     L"This log could not be opened from %04u-%02u-%02u %02u:%02u:%02u until now "
+                     L"(error %lu: %s). %s",
+                     since.wYear, since.wMonth, since.wDay, since.wHour, since.wMinute, since.wSecond,
+                     error, ErrorText(error).c_str(),
+                     kept.empty() ? L"Nothing was logged meanwhile." : L"What was logged meanwhile follows.");
+        std::wstring line = Stamp() + note;
+        if (dropped > 0)
         {
-            // BOM so the log opens as UTF-8 in Notepad and Get-Content alike.
-            // Written to any new file, not only truncated ones, since the tray
-            // log is now created fresh rather than inherited from a CLI run.
-            const unsigned char bom[] = { 0xEF, 0xBB, 0xBF };
-            DWORD written = 0;
-            WriteFile(g_file, bom, sizeof(bom), &written, nullptr);
+            wchar_t more[128];
+            swprintf_s(more, L" %zu more line(s) did not fit in memory and are lost.", dropped);
+            line += more;
         }
-        else
-        {
-            SetFilePointer(g_file, 0, nullptr, FILE_END);
-        }
+        Put(file, ToUtf8(line + L"\r\n"));
+
+        for (const std::string& k : kept) Put(file, k);
+        kept.clear();
+        keptBytes = 0;
+        dropped   = 0;
+        error     = 0;
+    }
+    return true;
+}
+
+void LogSink::Write(const std::wstring& line)
+{
+    std::string bytes = ToUtf8(line);
+    if (Open())
+    {
+        Put(file, bytes);
+        return;
+    }
+
+    // Keeps the earliest lines: they show what the app was doing when the file
+    // was first found shut, and the cap only matters if it stays shut for days.
+    if (keptBytes + bytes.size() <= keepBytes)
+    {
+        keptBytes += bytes.size();
+        kept.push_back(std::move(bytes));
+    }
+    else
+    {
+        ++dropped;
     }
 }
+
+void LogSink::Close()
+{
+    if (IsOpen())
+    {
+        CloseHandle(file);
+        file = INVALID_HANDLE_VALUE;
+    }
+}
+
+std::wstring LogSink::Problem() const
+{
+    if (IsOpen() || error == 0) return std::wstring();
+
+    wchar_t b[1024];
+    _snwprintf_s(b, _TRUNCATE,
+                 L"Not written since %04u-%02u-%02u %02u:%02u:%02u: the file could not be opened "
+                 L"(error %lu: %s). WinSwapper keeps trying, and keeps what it logs until then.",
+                 since.wYear, since.wMonth, since.wDay, since.wHour, since.wMinute, since.wSecond,
+                 error, ErrorText(error).c_str());
+    return b;
+}
+
+// ------------------------------------------------------------------ log ----
 
 // Tray mode only. Called with the file closed (at start-up) or open (before a line).
 static void RollOverIfLarge()
@@ -78,10 +196,10 @@ static void RollOverIfLarge()
     if (g_rollFailed) return;
 
     LONGLONG size = 0;
-    if (g_file != INVALID_HANDLE_VALUE)
+    if (g_sink.IsOpen())
     {
         LARGE_INTEGER li = {};
-        if (!GetFileSizeEx(g_file, &li)) return;
+        if (!GetFileSizeEx(g_sink.file, &li)) return;
         size = li.QuadPart;
     }
     else
@@ -95,10 +213,10 @@ static void RollOverIfLarge()
     // A file that is open cannot be renamed, so close it, roll, and reopen. If the
     // rename fails - something holding .old.log, say - keep appending and stop
     // trying, rather than closing and reopening the file for every line.
-    const bool wasOpen = (g_file != INVALID_HANDLE_VALUE);
-    if (wasOpen) { CloseHandle(g_file); g_file = INVALID_HANDLE_VALUE; }
+    const bool wasOpen = g_sink.IsOpen();
+    g_sink.Close();
     if (!RollOver()) g_rollFailed = true;
-    if (wasOpen) OpenLogFile(false);
+    if (wasOpen) g_sink.Open();
 }
 
 void LogInit(LogMode mode)
@@ -106,8 +224,10 @@ void LogInit(LogMode mode)
     const bool cli = (mode == LogMode::Cli);
     g_tray = !cli;
     BuildPath(cli ? kCliLog : kTrayLog);
+    g_sink.path   = g_path;
+    g_sink.append = !cli;
     if (g_tray) RollOverIfLarge();
-    OpenLogFile(cli);
+    g_sink.Open();
 
     if (cli && AttachConsole(ATTACH_PARENT_PROCESS))
     {
@@ -120,14 +240,29 @@ void LogInit(LogMode mode)
 
 void LogShutdown()
 {
-    if (g_file != INVALID_HANDLE_VALUE) { CloseHandle(g_file); g_file = INVALID_HANDLE_VALUE; }
-    if (g_con  != INVALID_HANDLE_VALUE) { CloseHandle(g_con);  g_con  = INVALID_HANDLE_VALUE; }
+    // One last try, so lines kept while the file was shut are not lost needlessly.
+    // The path goes too: a line logged after this must not reopen the file, which
+    // for a command-line run would start it afresh and wipe the run's output.
+    if (!g_sink.path.empty()) g_sink.Open();
+    g_sink.Close();
+    g_sink.path.clear();
+    if (g_con != INVALID_HANDLE_VALUE) { CloseHandle(g_con); g_con = INVALID_HANDLE_VALUE; }
 }
 
 const wchar_t* LogFilePath()
 {
     if (g_path[0] == L'\0') BuildPath(kTrayLog);
     return g_path;
+}
+
+bool LogRetry()
+{
+    return !g_sink.path.empty() && g_sink.Open();
+}
+
+std::wstring LogProblem()
+{
+    return g_sink.Problem();
 }
 
 void LogF(const wchar_t* fmt, ...)
@@ -145,24 +280,7 @@ void LogF(const wchar_t* fmt, ...)
         WriteConsoleW(g_con, L"\r\n", 2, &n, nullptr);
     }
 
+    if (g_sink.path.empty()) return;   // before LogInit
     if (g_tray) RollOverIfLarge();
-
-    if (g_file != INVALID_HANDLE_VALUE)
-    {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-
-        wchar_t line[2176];
-        swprintf_s(line, L"[%02u:%02u:%02u.%03u] %s\r\n",
-                   st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, body);
-
-        const int need = WideCharToMultiByte(CP_UTF8, 0, line, -1, nullptr, 0, nullptr, nullptr);
-        if (need > 1)
-        {
-            std::vector<char> utf8(static_cast<size_t>(need));
-            WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8.data(), need, nullptr, nullptr);
-            DWORD written = 0;
-            WriteFile(g_file, utf8.data(), static_cast<DWORD>(need - 1), &written, nullptr);
-        }
-    }
+    g_sink.Write(Stamp() + body + L"\r\n");
 }

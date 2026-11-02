@@ -16,6 +16,12 @@ static const UINT kHotkeyLeft  = 1;
 static const UINT kHotkeyRight = 2;
 static const UINT kTrayId      = 1;
 
+// Started only if the log could not be opened at start-up, and stopped once it
+// is, so the lines kept meanwhile reach the file soon after it frees up - even if
+// nothing else is logged for hours.
+static const UINT kLogRetryTimer   = 1;
+static const UINT kLogRetryEveryMs = 10 * 1000;
+
 static HINSTANCE g_inst           = nullptr;
 static HWND      g_hwnd           = nullptr;
 static HICON     g_icon           = nullptr;
@@ -271,6 +277,15 @@ static void ToggleStartup()
 
 static void OpenLog()
 {
+    // Without this, a log that could not be opened would show an earlier run's
+    // lines as though they were this one's - which is how the problem went unseen.
+    if (!LogRetry())
+    {
+        const std::wstring msg = L"WinSwapper's log is not being written.\n\n" + LogProblem() +
+                                 L"\n\n" + LogFilePath() +
+                                 L"\n\nThe file opens next, as it was before then.";
+        MessageBoxW(nullptr, msg.c_str(), L"WinSwapper", MB_OK | MB_ICONWARNING);
+    }
     ShellExecuteW(nullptr, nullptr, L"notepad.exe", LogFilePath(), nullptr, SW_SHOWNORMAL);
 }
 
@@ -282,6 +297,8 @@ static std::wstring HotkeyState(const Hotkey& h, bool registered)
 
 static void ShowAbout()
 {
+    const std::wstring logProblem = LogRetry() ? std::wstring() : L"\n" + LogProblem();
+
     // Truncated to fit rather than swprintf_s'd: two paths and two hotkeys from the
     // settings make the length depend on things outside this code.
     wchar_t msg[2048];
@@ -298,13 +315,13 @@ static void ShowAbout()
                L"Rotate right: %s\n"
                L"Ignoring: %zu program(s)\n\n"
                L"Settings: %s\n"
-               L"Log: %s\n\n"
+               L"Log: %s%s\n\n"
                L"Command line: --list, --dry-run, --rotate, --reverse, --selftest, --no-windows",
                HotkeyState(g_settings.rotateLeft,  g_leftOk).c_str(),
                HotkeyState(g_settings.rotateRight, g_rightOk).c_str(),
                g_settings.ignore.size(),
                SettingsPath().c_str(),
-               LogFilePath());
+               LogFilePath(), logProblem.c_str());
     MessageBoxW(nullptr, msg, L"About WinSwapper", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -394,6 +411,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DISPLAYCHANGE:
         LogF(L"Display configuration changed.");
         RefreshTrayIcon(true);
+        return 0;
+
+    case WM_TIMER:
+        if (wp == kLogRetryTimer && LogRetry()) KillTimer(hwnd, kLogRetryTimer);
         return 0;
 
     case WM_DESTROY:
@@ -555,6 +576,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     // Ctrl+Alt+Shift+S, are distinct to RegisterHotKey, so holding Shift picks the
     // reverse rotation on its own.
     LoadAndApplySettings(false);
+
+    // Every line tries the log again anyway, but an idle tray app logs nothing for
+    // hours, and the start-up lines are the ones that say what it is running with.
+    if (!LogRetry()) SetTimer(g_hwnd, kLogRetryTimer, kLogRetryEveryMs, nullptr);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0)

@@ -161,6 +161,15 @@ Logs are in `%LOCALAPPDATA%\WinSwapper\`:
   app keeps its own log open while it runs, which used to lock command-line runs out of a shared one
   and lose their output.
 
+If a log cannot be opened — another program holding the file, say — nothing is lost and nothing
+fails quietly. What would have been written is kept in memory (up to 256 KB), and the file is tried
+again with every new line — and every 10 seconds, if the tray app could not open it at start-up,
+since an idle tray app may log nothing for hours. Once it opens, a note comes first
+saying since when it could not be opened and the Windows error that stopped it, then the kept lines
+with their original times. Until then *About* says the log is not being written and why, and *Open
+log* says so before showing the file. Up to 1.07 the log was tried only once, at start-up, so a
+failure there left the whole run unlogged without a word.
+
 ## How it works
 
 **Ordering the displays.** Displays are enumerated and sorted left-to-right by their bounds.
