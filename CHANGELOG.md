@@ -4,7 +4,7 @@ What changed in each release. When a version is tagged, the release workflow pub
 whose heading matches the tag as that release's notes - and refuses to publish a release that has
 no section here, so add the entry before pushing the tag.
 
-## Unreleased
+## 1.08 - 2026-11-04
 
 - **Fix:** dialogs move with their window. An open dialog, such as *File Open*, used to stay behind
   while the window it belongs to moved to another display, which left that window unusable until
