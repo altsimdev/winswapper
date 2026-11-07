@@ -27,15 +27,20 @@ const wchar_t kDefaultText[] =
     L"\r\n"
     L"[Drag]\r\n"
     L"; Hold these keys and drag anywhere in a window: with the left mouse button to move\r\n"
-    L"; it, with the right to resize it from the corner or edge nearest the pointer. Ctrl,\r\n"
-    L"; Alt, Shift and Win joined with +, such as Ctrl+Alt, including at least one of\r\n"
-    L"; Ctrl, Alt or Win. Write \"none\" to turn either off.\r\n"
+    L"; it, with the right to resize it from the corner or edge nearest the pointer. Or\r\n"
+    L"; click the middle button (the wheel) to lower it: send it behind every other\r\n"
+    L"; window. Ctrl, Alt, Shift and Win joined with +, such as Ctrl+Alt, including at\r\n"
+    L"; least one of Ctrl, Alt or Win. Write \"none\" to turn any of them off.\r\n"
     L"Move   = Alt\r\n"
     L"Resize = Alt\r\n"
-    L"; A click without a drag still reaches the program, but a drag of its own with the\r\n"
-    L"; same keys - column selection in Notepad++ or Visual Studio, or sizing the brush\r\n"
-    L"; in Photoshop, say - no longer does. Leave such programs alone with a Skip line\r\n"
-    L"; each, named as under [Ignore]:\r\n"
+    L"Lower  = Alt\r\n"
+    L"; How near, in pixels at 100% scaling, a dragged window's edge has to come to the\r\n"
+    L"; edge of a display - or of the taskbar - to snap flush against it. 0 turns it off.\r\n"
+    L"Snap   = 10\r\n"
+    L"; A left or right click without a drag still reaches the program, but a middle-click\r\n"
+    L"; does not, nor does a drag of the program's own with the same keys - column\r\n"
+    L"; selection in Notepad++ or Visual Studio, or sizing the brush in Photoshop, say.\r\n"
+    L"; Leave such programs alone with a Skip line each, named as under [Ignore]:\r\n"
     L"; Skip = notepad++.exe\r\n";
 
 struct NamedKey
@@ -145,6 +150,8 @@ Settings DefaultSettings()
     s.rotateRight = { MOD_CONTROL | MOD_ALT | MOD_SHIFT, 'S' };
     s.moveMods    = MOD_ALT;
     s.resizeMods  = MOD_ALT;
+    s.lowerMods   = MOD_ALT;
+    s.snap        = 10;
     return s;
 }
 
@@ -369,6 +376,7 @@ Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& prob
 
             UINT* target = Same(key, L"Move")   ? &s.moveMods
                          : Same(key, L"Resize") ? &s.resizeMods
+                         : Same(key, L"Lower")  ? &s.lowerMods
                          : nullptr;
             if (target)
             {
@@ -378,6 +386,19 @@ Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& prob
                 else
                     problems.push_back(LineNo(lineNo) + key + L" '" + value + L"' " + why +
                                        L"; using " + FormatModifiers(*target));
+            }
+            else if (Same(key, L"Snap"))
+            {
+                // A whole number of pixels; "none" and "off" mean 0, as for the keys.
+                const bool digits = !value.empty() && value.size() <= 3 &&
+                                    value.find_first_not_of(L"0123456789") == std::wstring::npos;
+                const int  n      = Same(value, L"none") || Same(value, L"off") ? 0
+                                  : digits                                      ? _wtoi(value.c_str())
+                                                                                : -1;
+                if (n >= 0 && n <= kMaxSnap) s.snap = n;
+                else
+                    problems.push_back(LineNo(lineNo) + key + L" '" + value + L"' is not a number of pixels from 0 to " +
+                                       std::to_wstring(kMaxSnap) + L"; using " + std::to_wstring(s.snap));
             }
             else if (Same(key, L"Skip"))
             {
@@ -394,7 +415,7 @@ Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& prob
             }
             else
                 problems.push_back(LineNo(lineNo) + L"unknown setting '" + key +
-                                   L"' (expected Move, Resize or Skip)");
+                                   L"' (expected Move, Resize, Lower, Snap or Skip)");
             break;
         }
         }

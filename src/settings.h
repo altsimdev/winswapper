@@ -28,10 +28,15 @@ struct Settings
     std::vector<std::wstring> ignore;
 
     // The modifiers (MOD_* bits) that, held while dragging with the left mouse
-    // button, move the window under the pointer - and with the right, resize it. 0
-    // turns that one off.
+    // button, move the window under the pointer - and with the right, resize it; held
+    // while clicking the middle button, send it to the back. 0 turns that one off.
     UINT moveMods   = 0;
     UINT resizeMods = 0;
+    UINT lowerMods  = 0;
+
+    // How near, in pixels at 100% scaling, a dragged window's edge has to come to the
+    // edge of a display's work area to snap against it. 0 turns snapping off.
+    int snap = 0;
 
     // Programs whose windows dragging leaves alone, so that the same drag still
     // reaches them; normalised and matched as `ignore` is.
@@ -39,6 +44,9 @@ struct Settings
 };
 
 Settings DefaultSettings();
+
+// The most Snap may be: more would make a window cling to an edge it is nowhere near.
+const int kMaxSnap = 100;
 
 // "Ctrl+Alt+S" and the like, case-insensitive; "none" turns the hotkey off. At
 // least one of Ctrl, Alt or Win is required so a hotkey cannot swallow ordinary

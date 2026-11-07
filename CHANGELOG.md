@@ -6,6 +6,14 @@ no section here, so add the entry before pushing the tag.
 
 ## Unreleased
 
+- **New:** a window dragged with Alt snaps to the edges of the displays and the taskbar. Within 10
+  pixels, its edge - the one you can see, not the invisible border Windows puts around it - jumps
+  flush with the edge, and a side being resized does the same. A new `Snap` setting under `[Drag]`
+  changes the distance, and `0` turns snapping off.
+- **New:** hold Alt and click the middle mouse button (the wheel) to send a window behind all the
+  others, as on KDE. If it had the keyboard, the window now under the pointer gets it. A window kept
+  on top of others stays in front of the rest. It is on by default, with its own `Lower` setting
+  under `[Drag]`.
 - **Fix:** when Windows signed out, shut down or restarted, the tray log just stopped, with nothing
   to tell that from a crash. It now says which it was - or that an installer asked WinSwapper to
   close.

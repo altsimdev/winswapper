@@ -37,40 +37,65 @@ static Settings  g_settings       = DefaultSettings();
 
 // ------------------------------------------------------------------ tray ----
 
-// "Alt+drag", or for resizing "Alt+right-drag"; "off" when there are no keys.
-static std::wstring Gesture(UINT mods, bool right)
+// What the mouse does with the keys held, such as "Alt+drag moves, right-drag resizes,
+// middle-click lowers": the keys are named again only where they change, which keeps it
+// short enough for the tooltip. Empty when all three are off.
+static std::wstring Gestures()
 {
-    if (!mods) return L"off";
-    return FormatModifiers(mods) + (right ? L"+right-drag" : L"+drag");
+    struct Gesture
+    {
+        UINT           mods;
+        const wchar_t* does;
+    };
+    const Gesture all[] = { { g_settings.moveMods,   L"drag moves"          },
+                            { g_settings.resizeMods, L"right-drag resizes"  },
+                            { g_settings.lowerMods,  L"middle-click lowers" } };
+    std::wstring s;
+    UINT         keys = 0;
+    for (const Gesture& g : all)
+    {
+        if (!g.mods) continue;
+        if (!s.empty()) s += L", ";
+        if (g.mods != keys) s += FormatModifiers(g.mods) + L"+";
+        s += g.does;
+        keys = g.mods;
+    }
+    return s;
 }
 
-// How dragging stands, for the About box and the reload balloon.
-static std::wstring DragState()
+// How the mouse stands, for the About box and the reload balloon.
+static std::wstring MouseState()
 {
-    const UINT move = g_settings.moveMods, resize = g_settings.resizeMods;
-    if (!move && !resize) return L"off (in settings)";
-    std::wstring s;
-    if (move)   s = Gesture(move, false) + L" moves";
-    if (resize) s += (s.empty() ? L"" : L", ") + Gesture(resize, true) + L" resizes";
+    std::wstring s = Gestures();
+    if (s.empty())  return L"off (in settings)";
     if (!g_dragOn) return s + L" (UNAVAILABLE - see the log)";
     if (!g_settings.dragSkip.empty())
         s += L", except in " + std::to_wstring(g_settings.dragSkip.size()) + L" program(s)";
     return s;
 }
 
+static std::wstring SnapState()
+{
+    if (!g_settings.snap) return L"off (in settings)";
+    if (!g_settings.moveMods && !g_settings.resizeMods) return L"unused, as moving and resizing are off";
+    return L"within " + std::to_wstring(g_settings.snap) + L" pixels of a display's edge, at 100% scaling";
+}
+
 // The tooltip carries text from the settings now, so it is truncated to fit rather
-// than formatted with swprintf_s, which would abort the process on overflow.
+// than formatted with swprintf_s, which would abort the process on overflow. Windows
+// keeps 127 characters of it, which the defaults fit with a few to spare.
 static void FillTip(NOTIFYICONDATAW& nid)
 {
-    const auto state = [](UINT mods, bool right) {
-        return !mods ? std::wstring(L"off") : g_dragOn ? Gesture(mods, right) : std::wstring(L"unavailable");
-    };
+    const std::wstring gestures = Gestures();
+    const std::wstring mouse    = gestures.empty() ? L"Mouse: off"
+                                : g_dragOn         ? gestures
+                                                   : L"Mouse: unavailable";
     _snwprintf_s(nid.szTip, _TRUNCATE,
-                 L"WinSwapper - %d display%s\nLeft: %s\nRight: %s\nMove: %s\nResize: %s",
+                 L"WinSwapper - %d display%s\nLeft: %s\nRight: %s\n%s",
                  g_iconDisplays, g_iconDisplays == 1 ? L"" : L"s",
                  FormatHotkey(g_settings.rotateLeft).c_str(),
                  FormatHotkey(g_settings.rotateRight).c_str(),
-                 state(g_settings.moveMods, false).c_str(), state(g_settings.resizeMods, true).c_str());
+                 mouse.c_str());
 }
 
 static void UpdateTrayTip()
@@ -214,31 +239,25 @@ static bool ApplyDragging()
     DragOptions opts;
     opts.moveMods   = g_settings.moveMods;
     opts.resizeMods = g_settings.resizeMods;
+    opts.lowerMods  = g_settings.lowerMods;
+    opts.snap       = g_settings.snap;
     opts.skip       = g_settings.dragSkip;
     opts.notify     = g_hwnd;
 
-    DWORD      err  = 0;
-    const bool ok   = DragStart(opts, err);
-    const bool want = opts.moveMods || opts.resizeMods;
+    DWORD              err      = 0;
+    const bool         ok       = DragStart(opts, err);
+    const std::wstring gestures = Gestures();
+    const bool         want     = !gestures.empty();
     g_dragOn = ok && want;
 
     if (!want)
-        LogF(L"Dragging windows is turned off in settings.");
+        LogF(L"Moving, resizing and lowering windows with the mouse are all turned off in settings.");
     else if (ok)
     {
-        std::wstring line;
-        if (opts.moveMods && opts.resizeMods)
-            line = Gesture(opts.moveMods, false) + L" moves windows and " +
-                   Gesture(opts.resizeMods, true) + L" resizes them";
-        else if (opts.moveMods)
-            line = Gesture(opts.moveMods, false) + L" moves windows";
-        else
-            line = Gesture(opts.resizeMods, true) + L" resizes windows";
+        std::wstring line = L"Mouse: " + gestures;
         if (!opts.skip.empty())
             line += L", except in " + std::to_wstring(opts.skip.size()) + L" program(s)";
-        if (!opts.moveMods)   line += L"; moving them is turned off in settings";
-        if (!opts.resizeMods) line += L"; resizing them is turned off in settings";
-        LogF(L"%s.", line.c_str());
+        LogF(L"%s. Snapping: %s.", line.c_str(), SnapState().c_str());
     }
     else
         LogF(L"Could not watch the mouse for dragging windows, error %lu.", err);
@@ -270,10 +289,10 @@ static void ReportSettings(const std::vector<std::wstring>& problems, const std:
     else if (reloaded)
     {
         _snwprintf_s(msg, _TRUNCATE,
-                     L"Settings reloaded.\nLeft: %s   Right: %s\nIgnoring %zu program(s).\nDrag: %s",
+                     L"Settings reloaded.\nLeft: %s   Right: %s\nIgnoring %zu program(s).\nMouse: %s",
                      FormatHotkey(g_settings.rotateLeft).c_str(),
                      FormatHotkey(g_settings.rotateRight).c_str(), g_settings.ignore.size(),
-                     DragState().c_str());
+                     MouseState().c_str());
         Balloon(msg, NIIF_INFO);
     }
 }
@@ -382,20 +401,23 @@ static void ShowAbout()
                L"pixel-exact when the displays share a resolution. With two displays both "
                L"do the same swap; with N displays, N presses the same way also completes "
                L"the cycle.\n\n"
-               L"Holding the drag keys and dragging anywhere in a window moves it with the "
-               L"left mouse button, or resizes it with the right, as on many Linux "
-               L"desktops.\n\n"
+               L"Hold Alt, or the keys the settings name, anywhere in a window: dragging "
+               L"with the left mouse button moves it, with the right resizes it, and a "
+               L"middle-click sends it to the back, as on many Linux desktops. A dragged "
+               L"window's edges snap to the edges of the displays.\n\n"
                L"Rotate left:  %s\n"
                L"Rotate right: %s\n"
                L"Ignoring: %zu program(s)\n"
-               L"Dragging: %s\n\n"
+               L"Mouse: %s\n"
+               L"Snapping: %s\n\n"
                L"Settings: %s\n"
                L"Log: %s%s\n\n"
                L"Command line: --list, --dry-run, --rotate, --reverse, --selftest, --no-windows",
                HotkeyState(g_settings.rotateLeft,  g_leftOk).c_str(),
                HotkeyState(g_settings.rotateRight, g_rightOk).c_str(),
                g_settings.ignore.size(),
-               DragState().c_str(),
+               MouseState().c_str(),
+               SnapState().c_str(),
                SettingsPath().c_str(),
                LogFilePath(), logProblem.c_str());
     MessageBoxW(nullptr, msg, L"About WinSwapper", MB_OK | MB_ICONINFORMATION);
@@ -559,12 +581,16 @@ static void PrintUsage()
     LogF(L"  winswapper.exe             run in the notification area");
     LogF(L"                             %s rotates left, %s right",
          FormatHotkey(g_settings.rotateLeft).c_str(), FormatHotkey(g_settings.rotateRight).c_str());
-    if (g_settings.moveMods)
-        LogF(L"                             %s anywhere in a window moves it",
-             Gesture(g_settings.moveMods, false).c_str());
-    if (g_settings.resizeMods)
-        LogF(L"                             %s%s resizes it", Gesture(g_settings.resizeMods, true).c_str(),
-             g_settings.moveMods ? L"" : L" anywhere in a window");
+    // "anywhere in a window" goes on the first of these lines only.
+    const wchar_t* where   = L" anywhere in a window";
+    const auto     gesture = [&where](UINT mods, const wchar_t* how, const wchar_t* does) {
+        if (!mods) return;
+        LogF(L"                             %s+%s%s %s", FormatModifiers(mods).c_str(), how, where, does);
+        where = L"";
+    };
+    gesture(g_settings.moveMods,   L"drag",         L"moves it");
+    gesture(g_settings.resizeMods, L"right-drag",   L"resizes it");
+    gesture(g_settings.lowerMods,  L"middle-click", L"sends it to the back");
     LogF(L"  winswapper.exe --list      show displays and every window, included or not");
     LogF(L"  winswapper.exe --dry-run   compute the rotation and print it, move nothing");
     LogF(L"  winswapper.exe --rotate    perform one rotation and exit (--swap also works)");

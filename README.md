@@ -15,7 +15,8 @@ displays both do the same swap; with *N* displays, *N* presses the same way also
 
 It also moves and resizes single windows the way many Linux desktops do: hold **Alt** and drag
 anywhere in a window — with the left mouse button to move it, with the right to resize it. No need to
-find its title bar or its border.
+find its title bar or its border, and its edges snap to the edges of the screen. Alt and a click of
+the middle button sends a window behind all the others.
 
 ## Build
 
@@ -90,7 +91,7 @@ Run with no arguments and it goes to the notification area. Right-click the icon
 
 The icon pictures as many displays as are connected — one to four, and four for anything more — and
 redraws itself when you plug a display in or take one away. Hovering over it shows the exact count,
-the hotkeys and the drag keys.
+the hotkeys and what the mouse does with Alt held.
 
 *Start with Windows* is off until you turn it on. Ticking it registers this copy of the exe to start
 when you sign in, for your user only and without administrator rights; it then also appears in Task
@@ -114,15 +115,26 @@ middle, the nearest corner. The window stops at its smallest size, as when you d
 maximized window first becomes an ordinary one filling the screen, and is resized from there.
 Windows without a sizing border — most dialogs — keep their size.
 
-An Alt+click or Alt+right-click that doesn't move still reaches the program, delivered when the
-button comes up, so the right-click menu still opens. Only Alt on its own counts: with Shift or Ctrl
-held as well, the drag belongs to the program, so Alt+Shift+drag still selects a column in an editor
-that has one. The desktop, the taskbar, full-screen games and videos, windows that have stopped
-responding and windows of programs running as administrator are left alone, and their Alt+clicks go
-through untouched.
+Either way, a window brought within 10 pixels of the edge of a display — or of the taskbar — snaps
+flush against it: moved, the whole window jumps the last few pixels; resized, the side being dragged
+does. It goes by the edge you can see: Windows 10 and 11 give most windows an invisible border,
+several pixels wide on the left, right and bottom, to grab them by, and that border then hangs over
+the edge. Between two displays, a window snaps to either side of the line where they meet.
 
-The keys for moving and resizing can each be changed or turned off in the settings — and programs
-with an Alt+drag of their own can be left out.
+Click the middle button — the wheel — with Alt held, and the window goes behind every other window,
+uncovering whatever it was hiding, without being minimized. If it had the keyboard, the window now
+under the pointer gets it, as on KDE. A window kept on top of others goes behind only those that are
+kept on top too, and stays in front of the rest.
+
+An Alt+click or Alt+right-click that doesn't move still reaches the program, delivered when the
+button comes up, so the right-click menu still opens; an Alt+middle-click never does. Only Alt on its
+own counts: with Shift or Ctrl held as well, the drag belongs to the program, so Alt+Shift+drag still
+selects a column in an editor that has one. The desktop, the taskbar, full-screen games and videos,
+windows that have stopped responding and windows of programs running as administrator are left alone,
+and their Alt+clicks go through untouched.
+
+The keys for moving, resizing and lowering can each be changed or turned off in the settings, and so
+can snapping — and programs with an Alt+drag of their own can be left out.
 
 ### Settings
 
@@ -141,6 +153,8 @@ slack.exe
 [Drag]
 Move   = Alt
 Resize = Alt
+Lower  = Alt
+Snap   = 10
 Skip   = notepad++.exe
 ```
 
@@ -152,15 +166,19 @@ Skip   = notepad++.exe
 - **Ignore** lists programs whose windows stay put when the others rotate, one per line, named as in
   the *Details* tab of Task Manager; `.exe` may be left off. Everything else rotates around them.
   `--list` shows each ignored window and the line that caught it. Dragging still moves them.
-- **Drag** has three settings. `Move` is the keys held while dragging with the left button to move
-  a window, and `Resize` the keys held while dragging with the right to resize one: modifiers joined
-  with `+`, as for a hotkey but with no key, again including at least one of `Ctrl`, `Alt` or
-  `Win` — programs already use Shift with the mouse. Exactly those keys must be held, no more. `none`
-  turns either one off. `Skip` names a program whose windows dragging leaves alone, so that its own
-  drag with the same keys keeps working — column selection in Notepad++ or Visual Studio, or sizing
-  the brush in Photoshop, say. Give one `Skip` line per program, or several programs on one line
-  separated by commas, named as under `[Ignore]`. A setting left out keeps its default, so a file
-  written before dragging existed, with no `[Drag]` section, gets Alt for both.
+- **Drag** has five settings. `Move` is the keys held while dragging with the left button to move
+  a window, `Resize` the keys held while dragging with the right to resize one, and `Lower` the keys
+  held while clicking the middle button to send one to the back: modifiers joined with `+`, as for a
+  hotkey but with no key, again including at least one of `Ctrl`, `Alt` or `Win` — programs already
+  use Shift with the mouse. Exactly those keys must be held, no more. `none` turns any of them off.
+  `Snap` is how near, in pixels, an edge has to come to snap: a whole number from `0` to `100`, at
+  100% display scaling and larger in proportion above it; `0`, `off` or `none` turns snapping off.
+  `Skip` names a program whose windows dragging leaves alone, so that its own drag with the same keys
+  keeps working — column selection in Notepad++ or Visual Studio, or sizing the brush in Photoshop,
+  say. Give one `Skip` line per program, or several programs on one line separated by commas, named
+  as under `[Ignore]`. A setting left out keeps its default, so a file written by an earlier version
+  — without `Lower` and `Snap`, or with no `[Drag]` section at all — gets Alt for each, and snapping
+  within 10 pixels.
 
 A mistake affects only its own line: a bad hotkey or drag setting keeps its default, and anything
 unusable is reported with its line number in the log and in a notification, while the rest of the
@@ -176,16 +194,17 @@ their own log file (see below):
 | `winswapper.exe --list` | Show the displays and **every** top-level window, with the reason each one was included or excluded |
 | `winswapper.exe --dry-run` | Compute the whole rotation and print it — moves nothing |
 | `winswapper.exe --rotate` | Perform one rotation and exit (bind this to anything you like) |
-| `winswapper.exe --selftest` | Verify the rotation mapping, the remap arithmetic, the three window-move paths and dragging |
+| `winswapper.exe --selftest` | Verify the rotation mapping, the remap arithmetic, the three window-move paths, and dragging, snapping and lowering |
 
 `--reverse` (or `--right`) added to `--rotate` or `--dry-run` rotates right instead of left. Those
 are the only modes it applies to; combined with anything else, or given alone, it is an error rather
 than being silently ignored. `--swap` is accepted as a synonym for `--rotate`, since that was its
 name before 1.01.
 
-`--selftest` opens test windows, which takes the focus for a few seconds: one that it drags, resizes
-and maximizes on the main display, then — given a second display — more that it moves between your
-displays. The drag test feeds the window made-up mouse events, so the real pointer never moves.
+`--selftest` opens test windows, which takes the focus for a few seconds: one that it drags, resizes,
+maximizes, snaps into a corner and sends to the back on the main display, with two more for it to go
+behind, then — given a second display — more that it moves between your displays. The drag test
+feeds the window made-up mouse events, so the real pointer never moves.
 `--selftest --no-windows` skips just those tests: the rotation arithmetic, the icons, *Start with
 Windows* (exercised in a scratch registry key), the drag logic on made-up mouse events and the remap
 round trips all still run, and nothing on screen is disturbed. Like `--reverse`, `--no-windows` is
@@ -310,6 +329,27 @@ top-left corner, which would push it right or down when its left or top side is 
 dragged. So the thread checks where the window ended up and puts its far side back; from then on in
 that drag it asks for no less than the program allowed, so the window doesn't flicker back and forth.
 
+Snapping adjusts each position before it is applied. An edge of the window within the `Snap`
+distance of the same edge of a display's work area — left to left, top to top — is moved onto it;
+when both sides are in reach, the nearer one wins. Only a display beside the window counts: its left
+and right edges if the window overlaps it from top to bottom, its top and bottom if it overlaps it
+across, so a display off at a diagonal has no pull. The work areas, which leave out the taskbar, are
+read once per drag. The edges compared are the visible frame's, from DWM
+(`DWMWA_EXTENDED_FRAME_BOUNDS`), rather than `GetWindowRect`'s, which take in the invisible border.
+A maximized window hides its borders off the screen, so for one being un-maximized they are read
+only once it has left its maximized size. The distance is scaled by the system DPI, so `10` is 15
+pixels at 150%.
+
+An Alt+middle-click does its work as the button goes down, and the press and release are both kept
+from the program. The window at the top of the clicked window's owner chain — the application, if a
+dialog was clicked — is placed beneath the lowest window showing in its layer, the always-on-top one
+or the other, that is neither its own nor the desktop's. That is `SetWindowPos` with that window to
+go beneath, rather than `HWND_BOTTOM`: a window placed beneath another takes the windows it owns
+along, as the stacking repair above relies on, and an always-on-top window stays one. Its program
+has to answer for that, so it is done on a thread of its own, never the hook's. If the window had
+the keyboard, the thread then gives it to the window under the pointer — or that window's open
+dialog — and the log says if Windows would not allow it.
+
 Alt and Win each do something on their own when let go: Alt opens the window's menu bar, Win opens
 Start — unless a key or click came in between. The program never saw the click, so while the key is
 down the hook taps a key that does nothing (`0xE8`, which Windows leaves unassigned), and letting go
@@ -319,7 +359,8 @@ A window is not dragged when it is the desktop or the taskbar, not showing, an u
 cloaked, full screen (covering its display without being maximized: games, videos, presentations),
 not responding, or run as administrator — Windows would refuse to move it, and by then its click
 would be gone. Nor is one whose program is on the `Skip` list, and a window without a sizing border
-(`WS_THICKFRAME`) is not resized. The press goes through untouched, and the log says why.
+(`WS_THICKFRAME`) is not resized. The press goes through untouched, and the log says why. The same
+goes for sending a window to the back.
 
 ## Known limitations
 
@@ -327,16 +368,17 @@ would be gone. Nor is one whose program is on the `Skip` list, and a window with
   by a process running as administrator; Windows blocks it (UIPI). Those windows are skipped and
   counted, and a tray balloon reports how many. Dragging leaves them alone too. Running WinSwapper
   itself as administrator would fix it, at the cost of a UAC prompt every launch.
-- **Alt+drag is WinSwapper's.** While dragging is on, a program with an Alt+drag or Alt+right-drag
-  of its own — column selection in Notepad++, Visual Studio or Word, duplicating in some graphics
-  programs, sizing the brush in Photoshop, orbiting or zooming in some 3D programs — no longer gets
-  it. Add the program to `Skip`, or choose other drag keys. Alt+Shift+drag and the like still reach
-  programs.
+- **Alt+drag is WinSwapper's.** While dragging is on, a program with an Alt+drag, Alt+right-drag or
+  Alt+middle-click of its own — column selection in Notepad++, Visual Studio or Word, duplicating in
+  some graphics programs, sizing the brush in Photoshop, orbiting, panning or zooming in some 3D
+  programs — no longer gets it. Add the program to `Skip`, or choose other keys. Alt+Shift+drag and
+  the like still reach programs.
 - **An Alt+click arrives late.** An Alt+click or Alt+right-click reaches the program only when the
   button comes up, as a quick press and release where the button came up, so an Alt+press-and-hold
   does nothing in the program.
-- **No snapping.** Dragging moves or resizes the window and nothing more: no Snap layouts or snapping
-  to the screen edges, which Windows keeps for dragging by the title bar and border.
+- **Snapping is to displays only.** A dragged window snaps to the edges of the displays and the
+  taskbar, but not to other windows. Nor are there Snap layouts, or a window filling half the screen
+  when dragged against its side: Windows keeps those for dragging by the title bar.
 - **Resizing skips a program's size steps.** A program can adjust a size while you drag its border
   — a terminal to whole character cells, a video player to its picture's shape — but Windows asks it
   only while that border is being dragged. A resize with Alt+right-drag sets each size directly, so
@@ -372,7 +414,7 @@ would be gone. Nor is one whose program is on the `Skip` list, and a window with
 ```
 src/main.cpp      WinMain, hidden window, tray icon, hotkey, menu, message loop
 src/swapper.cpp   display and window enumeration, remap arithmetic, applying moves
-src/drag.cpp      dragging: the mouse hook, which presses to take, moving and resizing the window
+src/drag.cpp      the mouse: the hook, which presses to take, moving, resizing, snapping and lowering
 src/log.cpp       log files plus console output for the command-line modes
 src/settings.cpp  settings.ini: hotkey and drag-key syntax, program lists, reading and writing the file
 src/tray.cpp      which icon to show, and the Start with Windows setting

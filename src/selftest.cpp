@@ -95,13 +95,16 @@ static bool IsRect(const RECT& r, LONG left, LONG top, LONG right, LONG bottom)
 // record of everything the tracker asked for.
 struct FakeDragEnv : DragEnv
 {
-    HWND           window        = reinterpret_cast<HWND>(static_cast<UINT_PTR>(0x500));
-    const wchar_t* refusal       = nullptr;   // for moving and resizing alike
-    const wchar_t* resizeRefusal = nullptr;   // for resizing alone
-    bool           maximized     = false;
-    RECT           rect          = { 100, 100, 500, 400 };
-    SIZE           normal        = { 400, 300 };
-    RECT           work          = { 0, 0, 1920, 1040 };
+    HWND              window        = reinterpret_cast<HWND>(static_cast<UINT_PTR>(0x500));
+    const wchar_t*    refusal       = nullptr;   // for everything alike
+    const wchar_t*    resizeRefusal = nullptr;   // for resizing alone
+    bool              maximized     = false;     // until Restore()
+    RECT              rect          = { 100, 100, 500, 400 };
+    SIZE              normal        = { 400, 300 };
+    RECT              work          = { 0, 0, 1920, 1040 };
+    std::vector<RECT> areas         = { { 0, 0, 1920, 1040 } };
+    RECT              insets        = {};
+    bool              lagging       = false;     // Restore() changes nothing: the test does, step by step
 
     int                begins = 0, restores = 0, ends = 0, refused = 0, masks = 0;
     int                replays = 0, rightReplays = 0;
@@ -113,20 +116,31 @@ struct FakeDragEnv : DragEnv
     RECT               endTo         = {};
     bool               endResized    = false;
     bool               endRestored   = false;
-    bool               refusedResize = false;
+    MouseAction        refusedAs     = MouseAction::Move;
+    std::vector<HWND>  lowered;
+    POINT              loweredAt     = {};
 
     HWND           WindowAt(POINT) override  { return window; }
-    const wchar_t* Refusal(HWND, bool resize) override
+    const wchar_t* Refusal(HWND, MouseAction a) override
     {
-        return refusal ? refusal : resize ? resizeRefusal : nullptr;
+        return refusal ? refusal : a == MouseAction::Resize ? resizeRefusal : nullptr;
     }
-    bool           Maximized(HWND) override  { return maximized; }
-    RECT           Rect(HWND) override       { return rect; }
-    SIZE           NormalSize(HWND) override { return normal; }
-    RECT           WorkArea(HWND) override   { return work; }
+    bool              Maximized(HWND) override   { return maximized; }
+    RECT              Rect(HWND) override        { return rect; }
+    SIZE              NormalSize(HWND) override  { return normal; }
+    RECT              WorkArea(HWND) override    { return work; }
+    std::vector<RECT> WorkAreas() override       { return areas; }
+    RECT              FrameInsets(HWND) override { return insets; }
 
     void Begin(HWND) override                                 { ++begins; }
-    void Restore(HWND, const RECT& to) override               { ++restores; restoredTo = to; }
+    void Restore(HWND, const RECT& to) override
+    {
+        ++restores;
+        restoredTo = to;
+        if (lagging) return;
+        maximized = false;
+        rect      = to;
+    }
     void Move(HWND, POINT p) override                         { moves.push_back(p); }
     void Resize(HWND, const RECT& to, UINT edges) override    { sizes.push_back(to); sizeEdges = edges; }
     void End(HWND, const RECT& from, const RECT& to, bool resized, bool restored) override
@@ -137,7 +151,8 @@ struct FakeDragEnv : DragEnv
         endResized  = resized;
         endRestored = restored;
     }
-    void Refused(HWND, const wchar_t*, bool resize) override  { ++refused; refusedResize = resize; }
+    void Lower(HWND h, POINT pt) override                     { lowered.push_back(h); loweredAt = pt; }
+    void Refused(HWND, const wchar_t*, MouseAction a) override { ++refused; refusedAs = a; }
     void MaskModifier() override                              { ++masks; }
     void ReplayClick(bool right) override                     { ++replays; rightReplays += right; }
 };
@@ -152,12 +167,14 @@ struct NoInputDragEnv : DragEnv
     int                      replays      = 0;
     int                      rightReplays = 0;
 
-    HWND           WindowAt(POINT) override              { return target; }
-    const wchar_t* Refusal(HWND h, bool resize) override { return real->Refusal(h, resize); }
-    bool           Maximized(HWND h) override            { return real->Maximized(h); }
-    RECT           Rect(HWND h) override                 { return real->Rect(h); }
-    SIZE           NormalSize(HWND h) override           { return real->NormalSize(h); }
-    RECT           WorkArea(HWND h) override             { return real->WorkArea(h); }
+    HWND              WindowAt(POINT) override                { return target; }
+    const wchar_t*    Refusal(HWND h, MouseAction a) override { return real->Refusal(h, a); }
+    bool              Maximized(HWND h) override              { return real->Maximized(h); }
+    RECT              Rect(HWND h) override                   { return real->Rect(h); }
+    SIZE              NormalSize(HWND h) override             { return real->NormalSize(h); }
+    RECT              WorkArea(HWND h) override               { return real->WorkArea(h); }
+    std::vector<RECT> WorkAreas() override                    { return real->WorkAreas(); }
+    RECT              FrameInsets(HWND h) override            { return real->FrameInsets(h); }
 
     void Begin(HWND h) override                              { real->Begin(h); }
     void Restore(HWND h, const RECT& to) override            { real->Restore(h, to); }
@@ -167,9 +184,10 @@ struct NoInputDragEnv : DragEnv
     {
         real->End(h, from, to, resized, restored);
     }
-    void Refused(HWND h, const wchar_t* why, bool resize) override { real->Refused(h, why, resize); }
-    void MaskModifier() override                                   { ++masks; }
-    void ReplayClick(bool right) override                          { ++replays; rightReplays += right; }
+    void Lower(HWND h, POINT pt) override                               { real->Lower(h, pt); }
+    void Refused(HWND h, const wchar_t* why, MouseAction a) override    { real->Refused(h, why, a); }
+    void MaskModifier() override                                        { ++masks; }
+    void ReplayClick(bool right) override                               { ++replays; rightReplays += right; }
 };
 
 // The drag test's window: a program with a minimum size of its own, larger than
@@ -496,29 +514,41 @@ int SelfTest(bool windows)
         ParseSettings(L"RotateLeft = Ctrl+Alt+S\n", strayProblems);
         check(strayProblems.size() == 1, L"a setting outside any [section] is reported");
 
-        check(d.moveMods == MOD_ALT && d.resizeMods == MOD_ALT && d.dragSkip.empty(),
-              L"dragging is on by default, with Alt, to move and to resize, in every program");
+        check(d.moveMods == MOD_ALT && d.resizeMods == MOD_ALT && d.lowerMods == MOD_ALT && d.snap == 10 &&
+                  d.dragSkip.empty(),
+              L"the mouse is on by default, with Alt, to move, resize and lower windows in every program, "
+              L"with edges snapping within 10 pixels");
 
         std::vector<std::wstring> dragProblems;
         const Settings ds = ParseSettings(L"[drag]\r\n"
                                           L"move = Ctrl+Win\r\n"
                                           L"RESIZE = none\r\n"
+                                          L"lower = Ctrl+Alt\r\n"
+                                          L"snap = 25\r\n"
                                           L"Skip = blender.exe, \"C:\\Tools\\maya.exe\" ,Photoshop\r\n"
                                           L"Skip = notepad++\r\n"
                                           L"Move = Alt+Q\r\n"
                                           L"Resize = Shift\r\n"
+                                          L"Snap = 101\r\n"
+                                          L"Snap = -5\r\n"
+                                          L"Snap = ten\r\n"
                                           L"Speed = 3\r\n"
                                           L"code.exe\r\n",
                                           dragProblems);
         for (const std::wstring& p : dragProblems) LogF(L"    reported: %s", p.c_str());
         const std::vector<std::wstring> wantSkip = { L"blender.exe", L"maya.exe", L"Photoshop.exe", L"notepad++.exe" };
-        check(ds.moveMods == (MOD_CONTROL | MOD_WIN) && ds.resizeMods == 0 && ds.dragSkip == wantSkip &&
-              ds.ignore.empty(),
-              L"[Drag] takes its keys to move and to resize, and programs to skip, several to a line if need be, "
-              L"named as under [Ignore]");
-        check(dragProblems.size() == 4,
-              L"four mistakes under [Drag], four reports: a key among the drag keys, Shift alone, an unknown "
-              L"setting, a line without =");
+        check(ds.moveMods == (MOD_CONTROL | MOD_WIN) && ds.resizeMods == 0 && ds.lowerMods == (MOD_CONTROL | MOD_ALT) &&
+                  ds.snap == 25 && ds.dragSkip == wantSkip && ds.ignore.empty(),
+              L"[Drag] takes its keys to move, resize and lower, how near edges snap, and programs to skip, "
+              L"several to a line if need be, named as under [Ignore]");
+        check(dragProblems.size() == 7,
+              L"seven mistakes under [Drag], seven reports: a key among the drag keys, Shift alone, a snap "
+              L"too far, a negative one and a word, an unknown setting, a line without =");
+
+        std::vector<std::wstring> offProblems;
+        const Settings turnedOff = ParseSettings(L"[Drag]\nSnap = off\nLower = none\n", offProblems);
+        check(turnedOff.snap == 0 && turnedOff.lowerMods == 0 && turnedOff.moveMods == MOD_ALT && offProblems.empty(),
+              L"\"off\" turns snapping off, as 0 does, and \"none\" turns lowering off, leaving the rest be");
 
         // e-acute as UTF-8 (C3 A9) and as UTF-16 (E9 00), with and without a BOM.
         const std::vector<unsigned char> u8bom = { 0xEF, 0xBB, 0xBF, 'a', 0xC3, 0xA9 };
@@ -542,7 +572,8 @@ int SelfTest(bool windows)
         const Settings loaded = LoadSettings(path, written);
         check(wrote && written.empty() && loaded.rotateLeft == d.rotateLeft &&
               loaded.rotateRight == d.rotateRight && loaded.ignore.empty() &&
-              loaded.moveMods == d.moveMods && loaded.resizeMods == d.resizeMods && loaded.dragSkip.empty(),
+              loaded.moveMods == d.moveMods && loaded.resizeMods == d.resizeMods &&
+                  loaded.lowerMods == d.lowerMods && loaded.snap == d.snap && loaded.dragSkip.empty(),
               L"the default file it writes reads back as exactly the defaults, with no problems");
 
         HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
@@ -706,7 +737,7 @@ int SelfTest(bool windows)
 
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             const bool down = t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             const bool move = t.OnMouse(WM_MOUSEMOVE, { 204, 196 }, 0, false);   // 4 px is still a click
             const bool up   = t.OnMouse(WM_LBUTTONUP,  { 204, 196 }, 0, false);
@@ -716,7 +747,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;   // its window is at (100,100)
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             const bool down  = t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             const bool move1 = t.OnMouse(WM_MOUSEMOVE, { 210, 205 }, 0, false);
             const bool move2 = t.OnMouse(WM_MOUSEMOVE, { 260, 180 }, 0, false);
@@ -733,7 +764,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             const bool plain   = t.OnMouse(WM_LBUTTONDOWN, at, 0, false);
             const bool plainUp = t.OnMouse(WM_LBUTTONUP,   at, 0, false);
             const bool more    = t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT | MOD_SHIFT, false);
@@ -750,18 +781,20 @@ int SelfTest(bool windows)
         {
             FakeDragEnv e;
             e.refusal = L"it is full screen";
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             const bool down = t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             const bool move = t.OnMouse(WM_MOUSEMOVE, { 300, 300 }, 0, false);
             const bool up   = t.OnMouse(WM_LBUTTONUP,  { 300, 300 }, 0, false);
-            check(!down && !move && !up && e.refused == 1 && !e.refusedResize && e.masks == 0 && e.begins == 0,
+            check(!down && !move && !up && e.refused == 1 && e.refusedAs == MouseAction::Move && e.masks == 0 &&
+                      e.begins == 0,
                   L"a window that may not be dragged gets its Alt+click as usual, and the refusal is reported");
 
             FakeDragEnv nowhere;
             nowhere.window = nullptr;
-            DragTracker t2(nowhere, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t2(nowhere, { MOD_ALT, MOD_ALT, MOD_ALT }, near4, least);
             check(!t2.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false) && !t2.OnMouse(WM_RBUTTONDOWN, at, MOD_ALT, false) &&
-                  nowhere.refused == 0 && nowhere.masks == 0,
+                  !t2.OnMouse(WM_MBUTTONDOWN, at, MOD_ALT, false) && nowhere.refused == 0 && nowhere.masks == 0 &&
+                  nowhere.lowered.empty(),
                   L"a press over no window at all is left alone");
         }
         {
@@ -769,7 +802,7 @@ int SelfTest(bool windows)
             e.maximized = true;
             e.rect      = { 0, 0, 1000, 800 };
             e.normal    = { 500, 400 };
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_LBUTTONDOWN, { 250, 195 }, MOD_ALT, false);
             t.OnMouse(WM_MOUSEMOVE,   { 250, 200 }, 0, false);   // 5 px: a drag
             t.OnMouse(WM_MOUSEMOVE,   { 300, 260 }, 0, false);
@@ -782,7 +815,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             t.OnMouse(WM_LBUTTONUP,   at, 0, false);
             const bool down  = t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, true);
@@ -796,7 +829,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             t.OnMouse(WM_MOUSEMOVE, { 220, 200 }, 0, false);
             const bool next   = t.OnMouse(WM_LBUTTONDOWN, { 400, 400 }, 0, false);
@@ -806,7 +839,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, 0, near4, least);   // moving only
+            DragTracker t(e, { MOD_ALT, 0, 0 }, near4, least);   // moving only
             const bool rDown = t.OnMouse(WM_RBUTTONDOWN, at, MOD_ALT, false);
             const bool rUp   = t.OnMouse(WM_RBUTTONUP,   at, MOD_ALT, false);
             t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
@@ -814,9 +847,9 @@ int SelfTest(bool windows)
             const bool wheel = t.OnMouse(WM_MOUSEWHEEL,  { 220, 200 }, 0, false);
             const bool mid   = t.OnMouse(WM_MBUTTONDOWN, { 220, 200 }, 0, false);
             const bool midUp = t.OnMouse(WM_MBUTTONUP,   { 220, 200 }, 0, false);
-            check(!rDown && !rUp && !wheel && !mid && !midUp && t.Dragging() && e.masks == 1,
-                  L"with resizing turned off, an Alt+right-click goes through; the middle button and the wheel "
-                  L"always do, even mid-drag");
+            check(!rDown && !rUp && !wheel && !mid && !midUp && t.Dragging() && e.masks == 1 && e.lowered.empty(),
+                  L"with resizing turned off, an Alt+right-click goes through; with lowering off, so does the "
+                  L"middle button, even mid-drag; and the wheel always does");
             t.Cancel();
             const bool upAfter = t.OnMouse(WM_LBUTTONUP, { 220, 200 }, 0, false);
             check(!t.Dragging() && e.ends == 1 && upAfter,
@@ -825,16 +858,18 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, 0, 0, near4, least);
+            DragTracker t(e, {}, near4, least);
             const bool plain = t.OnMouse(WM_LBUTTONDOWN, at, 0, false);
             const bool alt   = t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             const bool right = t.OnMouse(WM_RBUTTONDOWN, at, MOD_ALT, false);
-            check(!plain && !alt && !right && e.masks == 0, L"with dragging turned off, nothing is taken");
+            const bool mid   = t.OnMouse(WM_MBUTTONDOWN, at, MOD_ALT, false);
+            check(!plain && !alt && !right && !mid && e.masks == 0 && e.lowered.empty(),
+                  L"with the mouse turned off, nothing is taken");
         }
         {
             FakeDragEnv ctrl, win;
-            DragTracker tc(ctrl, MOD_CONTROL | MOD_SHIFT, 0, near4, least);
-            DragTracker tw(win,  MOD_WIN, 0, near4, least);
+            DragTracker tc(ctrl, { MOD_CONTROL | MOD_SHIFT }, near4, least);
+            DragTracker tw(win,  { MOD_WIN }, near4, least);
             const bool c = tc.OnMouse(WM_LBUTTONDOWN, at, MOD_CONTROL | MOD_SHIFT, false);
             const bool w = tw.OnMouse(WM_LBUTTONDOWN, at, MOD_WIN, false);
             check(c && w && ctrl.masks == 0 && win.masks == 1,
@@ -907,7 +942,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             const bool down = t.OnMouse(WM_RBUTTONDOWN, at, MOD_ALT, false);
             const bool move = t.OnMouse(WM_MOUSEMOVE, { 196, 204 }, 0, false);
             const bool up   = t.OnMouse(WM_RBUTTONUP,  { 196, 204 }, 0, false);
@@ -918,7 +953,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;   // its window is (100,100)-(500,400)
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             const bool down = t.OnMouse(WM_RBUTTONDOWN, { 450, 350 }, MOD_ALT, false);   // the bottom-right third
             t.OnMouse(WM_MOUSEMOVE, { 460, 355 }, 0, false);
             t.OnMouse(WM_MOUSEMOVE, { 400, 300 }, 0, false);
@@ -932,7 +967,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_RBUTTONDOWN, { 120, 250 }, MOD_ALT, false);   // the middle of the left side
             t.OnMouse(WM_MOUSEMOVE,   { 480, 260 }, 0, false);         // far past the right side
             t.OnMouse(WM_RBUTTONUP,   { 480, 260 }, 0, false);
@@ -942,7 +977,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_RBUTTONDOWN, { 290, 240 }, MOD_ALT, false);   // the middle, nearer the top left
             t.OnMouse(WM_MOUSEMOVE,   { 270, 230 }, 0, false);
             t.OnMouse(WM_RBUTTONUP,   { 270, 230 }, 0, false);
@@ -952,7 +987,7 @@ int SelfTest(bool windows)
         {
             FakeDragEnv e;
             e.rect = { 100, 100, 200, 130 };   // 100x30: smaller than Windows' minimum
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_RBUTTONDOWN, { 195, 128 }, MOD_ALT, false);
             t.OnMouse(WM_MOUSEMOVE,   { 215, 140 }, 0, false);
             t.OnMouse(WM_MOUSEMOVE,   { 150, 100 }, 0, false);
@@ -967,7 +1002,7 @@ int SelfTest(bool windows)
             e.maximized = true;
             e.rect      = { -8, -8, 1928, 1048 };   // where Windows puts a maximized window
             e.work      = { 0, 0, 1920, 1040 };
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_RBUTTONDOWN, { 1900, 1000 }, MOD_ALT, false);
             t.OnMouse(WM_MOUSEMOVE,   { 1700, 900 },  0, false);
             t.OnMouse(WM_RBUTTONUP,   { 1700, 900 },  0, false);
@@ -980,17 +1015,17 @@ int SelfTest(bool windows)
         {
             FakeDragEnv e;
             e.resizeRefusal = L"its size is fixed";
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             const bool rDown = t.OnMouse(WM_RBUTTONDOWN, at, MOD_ALT, false);
             const bool rUp   = t.OnMouse(WM_RBUTTONUP,   at, 0, false);
             const bool lDown = t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
-            check(!rDown && !rUp && lDown && e.refused == 1 && e.refusedResize && e.masks == 1,
+            check(!rDown && !rUp && lDown && e.refused == 1 && e.refusedAs == MouseAction::Resize && e.masks == 1,
                   L"a window that may be moved but not resized gets its Alt+right-click as usual, and the "
                   L"refusal is reported");
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_CONTROL | MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_CONTROL | MOD_ALT }, near4, least);
             const bool altRight = t.OnMouse(WM_RBUTTONDOWN, at, MOD_ALT, false);
             t.OnMouse(WM_RBUTTONUP, at, 0, false);
             const bool bothLeft = t.OnMouse(WM_LBUTTONDOWN, at, MOD_CONTROL | MOD_ALT, false);
@@ -998,7 +1033,7 @@ int SelfTest(bool windows)
             const bool bothRight = t.OnMouse(WM_RBUTTONDOWN, at, MOD_CONTROL | MOD_ALT, false);
 
             FakeDragEnv e2;
-            DragTracker t2(e2, 0, MOD_ALT, near4, least);   // resizing only
+            DragTracker t2(e2, { 0, MOD_ALT }, near4, least);   // resizing only
             const bool left   = t2.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             const bool leftUp = t2.OnMouse(WM_LBUTTONUP,   at, 0, false);
             const bool right  = t2.OnMouse(WM_RBUTTONDOWN, at, MOD_ALT, false);
@@ -1008,7 +1043,7 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
             t.OnMouse(WM_MOUSEMOVE, { 220, 200 }, 0, false);
             const bool rDown = t.OnMouse(WM_RBUTTONDOWN, { 225, 200 }, 0, false);
@@ -1022,13 +1057,141 @@ int SelfTest(bool windows)
         }
         {
             FakeDragEnv e;
-            DragTracker t(e, MOD_ALT, MOD_ALT, near4, least);
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least);
             t.OnMouse(WM_RBUTTONDOWN, { 450, 350 }, MOD_ALT, false);
             t.OnMouse(WM_MOUSEMOVE,   { 470, 360 }, 0, false);
             const bool again = t.OnMouse(WM_RBUTTONDOWN, { 450, 350 }, MOD_ALT, false);
             check(again && e.ends == 1 && e.endResized && IsRect(e.endTo, 100, 100, 520, 410) && !t.Dragging(),
                   L"if a right release goes missing, the next right press ends the resize where it was, and "
                   L"may begin another");
+        }
+
+        // Sending to the back, with the middle button.
+        {
+            FakeDragEnv e;
+            DragTracker t(e, { MOD_ALT, MOD_ALT, MOD_ALT }, near4, least);
+            const bool down = t.OnMouse(WM_MBUTTONDOWN, at, MOD_ALT, false);
+            const bool move = t.OnMouse(WM_MOUSEMOVE, { 300, 300 }, 0, false);
+            const bool up   = t.OnMouse(WM_MBUTTONUP,  { 300, 300 }, 0, false);
+            check(down && !move && up && e.lowered.size() == 1 && e.lowered[0] == e.window &&
+                      e.loweredAt.x == at.x && e.loweredAt.y == at.y && e.masks == 1 && e.begins == 0 &&
+                      e.replays == 0 && !t.Dragging(),
+                  L"an Alt+middle-click sends the window to the back as the button goes down, and the program "
+                  L"gets neither half of it");
+        }
+        {
+            FakeDragEnv e;
+            DragTracker t(e, { MOD_ALT, MOD_ALT, MOD_ALT }, near4, least);
+            const bool plain   = t.OnMouse(WM_MBUTTONDOWN, at, 0, false);
+            const bool plainUp = t.OnMouse(WM_MBUTTONUP,   at, 0, false);
+            const bool more    = t.OnMouse(WM_MBUTTONDOWN, at, MOD_ALT | MOD_SHIFT, false);
+            const bool moreUp  = t.OnMouse(WM_MBUTTONUP,   at, 0, false);
+            e.refusal = L"it is full screen";
+            const bool no      = t.OnMouse(WM_MBUTTONDOWN, at, MOD_ALT, false);
+            const bool noUp    = t.OnMouse(WM_MBUTTONUP,   at, 0, false);
+            check(!plain && !plainUp && !more && !moreUp && !no && !noUp && e.lowered.empty() && e.masks == 0 &&
+                      e.refused == 1 && e.refusedAs == MouseAction::Lower,
+                  L"a middle-click without Alt, with another key held too, or on a window that may not be "
+                  L"lowered goes through, and the refusal is reported");
+        }
+        {
+            FakeDragEnv e;
+            DragTracker t(e, { MOD_ALT, MOD_ALT, MOD_ALT }, near4, least);
+            t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
+            t.OnMouse(WM_MOUSEMOVE, { 220, 200 }, 0, false);
+            const bool mid   = t.OnMouse(WM_MBUTTONDOWN, { 225, 200 }, MOD_ALT, false);
+            const bool midUp = t.OnMouse(WM_MBUTTONUP,   { 225, 200 }, 0, false);
+            const bool up    = t.OnMouse(WM_LBUTTONUP,   { 230, 200 }, 0, false);
+            check(mid && midUp && up && e.lowered.empty() && e.ends == 1 && IsRect(e.endTo, 130, 100, 530, 400),
+                  L"with lowering on, a middle press in the middle of a drag is taken with its release, as the "
+                  L"other button's is, and lowers nothing");
+        }
+
+        // Snapping to the edges of the displays, by a window's visible frame.
+        {
+            const RECT              in  = { 7, 0, 7, 7 };   // Windows 11's invisible borders, at 100%
+            const std::vector<RECT> one = { { 0, 0, 1920, 1040 } };
+            const RECT a  = SnappedMove({ -2, 300, 398, 600 },    in, one, 10);   // visible left edge 5 px in
+            const RECT b  = SnappedMove({ 4, 300, 404, 600 },     in, one, 10);   // 11 px in: too far
+            const RECT c  = SnappedMove({ 1525, 300, 1925, 600 }, in, one, 10);   // visible right edge 2 px short
+            const RECT dd = SnappedMove({ 500, 8, 900, 308 },     in, one, 10);   // top 8 px down
+            const RECT f  = SnappedMove({ 500, 743, 900, 1043 },  in, one, 10);   // visible bottom 4 px short
+            const RECT g  = SnappedMove({ -5, 300, 1932, 600 },   in, one, 10);   // both sides near: the nearer
+            const RECT h  = SnappedMove({ -2, 300, 398, 600 },    in, one, 0);    // snapping off
+            check(IsRect(a, -7, 300, 393, 600) && IsRect(b, 4, 300, 404, 600) && IsRect(c, 1527, 300, 1927, 600) &&
+                      IsRect(dd, 500, 0, 900, 300) && IsRect(f, 500, 747, 900, 1047) &&
+                      IsRect(g, -7, 300, 1930, 600) && IsRect(h, -2, 300, 398, 600),
+                  L"a window moved near a display's edge has its visible edge pulled flush with it, the "
+                  L"invisible border hanging over; only the nearer of two sides is; further away, or with "
+                  L"snapping off, it stays where it is");
+
+            const std::vector<RECT> two   = { { 0, 0, 1920, 1040 }, { 1920, 0, 3840, 1080 } };
+            const std::vector<RECT> apart = { { 0, 0, 1920, 1040 }, { 1920, 1040, 3840, 2120 } };
+            const RECT i = SnappedMove({ 1915, 200, 2315, 500 }, in, two, 10);
+            const RECT j = SnappedMove({ 1916, 100, 2316, 400 }, in, apart, 10);
+            check(IsRect(i, 1913, 200, 2313, 500) && IsRect(j, 1916, 100, 2316, 400),
+                  L"between two displays a window snaps to the edge of the one it is moving onto, but a "
+                  L"display it is not beside has no pull on it");
+
+            const RECT k = SnappedResize({ -3, 100, 1925, 400 },   kEdgeRight,              in, one, 10);
+            const RECT l = SnappedResize({ 4, 5, 500, 400 },       kEdgeLeft | kEdgeTop,    in, one, 10);
+            const RECT m = SnappedResize({ 1500, 600, 1920, 1045 }, kEdgeRight | kEdgeBottom, in, one, 10);
+            check(IsRect(k, -3, 100, 1927, 400) && IsRect(l, 4, 0, 500, 400) && IsRect(m, 1500, 600, 1927, 1047),
+                  L"in a resize only the sides being dragged snap, each on its own");
+        }
+        {
+            FakeDragEnv e;   // its window is at (100,100)-(500,400)
+            e.insets = { 7, 0, 7, 7 };
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least, 10);
+            t.OnMouse(WM_LBUTTONDOWN, at, MOD_ALT, false);
+            t.OnMouse(WM_MOUSEMOVE, { 110, 300 }, 0, false);   // its visible left edge 17 px in: free
+            t.OnMouse(WM_MOUSEMOVE, { 95, 300 }, 0, false);    // 2 px in: snapped
+            t.OnMouse(WM_LBUTTONUP, { 95, 300 }, 0, false);
+            check(SamePoints(e.moves, { { 10, 200 }, { -7, 200 } }) && IsRect(e.endTo, -7, 200, 393, 500),
+                  L"dragged near a display's edge, a window snaps flush against it, and is let go there");
+        }
+        {
+            FakeDragEnv e;
+            e.rect   = { 1500, 600, 1900, 1000 };
+            e.insets = { 7, 0, 7, 7 };
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least, 10);
+            t.OnMouse(WM_RBUTTONDOWN, { 1880, 980 }, MOD_ALT, false);   // the bottom-right corner
+            t.OnMouse(WM_MOUSEMOVE,   { 1900, 1025 }, 0, false);
+            t.OnMouse(WM_RBUTTONUP,   { 1900, 1025 }, 0, false);
+            check(e.sizes.size() == 1 && IsRect(e.sizes[0], 1500, 600, 1927, 1047),
+                  L"a side being resized snaps too: both sides of a corner, each to its own edge");
+        }
+        {
+            FakeDragEnv e;
+            e.maximized = true;
+            e.rect      = { -8, -8, 1928, 1048 };
+            e.normal    = { 800, 600 };
+            e.insets    = { 7, 0, 7, 7 };
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least, 10);
+            t.OnMouse(WM_LBUTTONDOWN, { 960, 20 }, MOD_ALT, false);
+            t.OnMouse(WM_MOUSEMOVE,   { 960, 30 }, 0, false);
+            t.OnMouse(WM_LBUTTONUP,   { 960, 30 }, 0, false);
+            check(e.restores == 1 && IsRect(e.restoredTo, 560, 8, 1360, 608) && SamePoints(e.moves, { { 560, 0 } }),
+                  L"a maximized window snaps too, once it has been restored and its own borders can be read");
+        }
+        {
+            FakeDragEnv e;
+            e.maximized = true;
+            e.rect      = { -8, -8, 1928, 1048 };
+            e.normal    = { 800, 600 };
+            e.insets    = { 8, 8, 8, 8 };   // a maximized window's: its whole border off the screen
+            e.lagging   = true;
+            DragTracker t(e, { MOD_ALT, MOD_ALT }, near4, least, 10);
+            t.OnMouse(WM_LBUTTONDOWN, { 960, 20 }, MOD_ALT, false);
+            t.OnMouse(WM_MOUSEMOVE,   { 960, 30 }, 0, false);   // being restored, so still maximized
+            e.maximized = false;                                 // its style changes first...
+            t.OnMouse(WM_MOUSEMOVE,   { 960, 31 }, 0, false);
+            e.rect   = e.restoredTo;                             // ...then its rect, and its borders with it
+            e.insets = { 7, 0, 7, 7 };
+            t.OnMouse(WM_MOUSEMOVE,   { 960, 32 }, 0, false);
+            t.OnMouse(WM_LBUTTONUP,   { 960, 32 }, 0, false);
+            check(SamePoints(e.moves, { { 560, 9 }, { 560, 0 } }),
+                  L"a window still being un-maximized is not snapped by the borders it had while maximized");
         }
     }
 
@@ -1071,23 +1234,25 @@ int SelfTest(bool windows)
             NoInputDragEnv env;
             env.target = w;
             wchar_t        msg[512];
-            const wchar_t* why = env.Refusal(w, false);
-            if (!why) why = env.Refusal(w, true);
-            swprintf_s(msg, L"an ordinary window may be moved and resized%s%s", why ? L" - but " : L"",
+            const wchar_t* why = env.Refusal(w, MouseAction::Move);
+            if (!why) why = env.Refusal(w, MouseAction::Resize);
+            if (!why) why = env.Refusal(w, MouseAction::Lower);
+            swprintf_s(msg, L"an ordinary window may be moved, resized and lowered%s%s", why ? L" - but " : L"",
                        why ? why : L"");
             check(why == nullptr, msg);
 
             const HWND shell = GetShellWindow();
             const HWND bar   = FindWindowW(L"Shell_TrayWnd", nullptr);
             if (shell || bar)
-                check((!shell || env.Refusal(shell, false)) && (!bar || env.Refusal(bar, false)),
+                check((!shell || (env.Refusal(shell, MouseAction::Move) && env.Refusal(shell, MouseAction::Lower))) &&
+                          (!bar || (env.Refusal(bar, MouseAction::Move) && env.Refusal(bar, MouseAction::Lower))),
                       L"the desktop and the taskbar may not be");
             else
                 LogF(L"  (no desktop or taskbar here, so refusing them is not checked)");
 
             const SIZE  threshold = { GetSystemMetrics(SM_CXDRAG),     GetSystemMetrics(SM_CYDRAG) };
             const SIZE  least     = { GetSystemMetrics(SM_CXMINTRACK), GetSystemMetrics(SM_CYMINTRACK) };
-            DragTracker t(env, MOD_ALT, MOD_ALT, threshold, least);
+            DragTracker t(env, { MOD_ALT, MOD_ALT, MOD_ALT }, threshold, least);
 
             // A drag by (150,90), in three steps.
             RECT before = {};
@@ -1202,14 +1367,42 @@ int SelfTest(bool windows)
             check(menuDown && menuUp && env.replays == 2 && env.rightReplays == 1 && EqualRect(&clicked, &unclicked),
                   L"an Alt+right-click without a drag leaves the window be, and is handed back as a right-click");
 
+            // Dragged to within a few pixels of the work area's top-left corner - its
+            // visible edges, that is - it snaps flush into it, its invisible borders
+            // hanging off. Away from the edges first, so it is a real drag.
+            {
+                const LONG  snapAt = MulDiv(10, static_cast<int>(GetDpiForSystem()), 96);   // as the drag thread has it
+                DragTracker snapper(env, { MOD_ALT, MOD_ALT, MOD_ALT }, threshold, least, snapAt);
+                RECT        r0 = {};
+                GetWindowRect(w, &r0);
+                const RECT  in   = env.FrameInsets(w);
+                const POINT hold = { r0.left + 60, r0.top + 60 };
+                const POINT drop = { hold.x + (work.left + 4 - in.left) - r0.left,   // visible left edge 4 px in
+                                     hold.y + (work.top + 6 - in.top) - r0.top };    // and its top 6 px down
+                snapper.OnMouse(WM_LBUTTONDOWN, hold, MOD_ALT, false);
+                snapper.OnMouse(WM_MOUSEMOVE, { hold.x + 100, hold.y + 100 }, 0, false);
+                snapper.OnMouse(WM_MOUSEMOVE, drop, 0, false);
+                snapper.OnMouse(WM_LBUTTONUP, drop, 0, false);
+                RECT wantSnap = r0;
+                OffsetRect(&wantSnap, work.left - in.left - r0.left, work.top - in.top - r0.top);
+                const RECT  gotSnap = SettleAt(w, wantSnap, 2000);
+                const RECT  inNow   = env.FrameInsets(w);
+                const POINT shown   = { gotSnap.left + inNow.left, gotSnap.top + inNow.top };
+                swprintf_s(msg, L"an Alt+drag to within 4 and 6 px of the work area's left and top snapped it flush, "
+                                L"to %s (wanted %s; invisible borders %ld,%ld,%ld,%ld; showing from %ld,%ld)",
+                           RectStr(gotSnap).c_str(), RectStr(wantSnap).c_str(), in.left, in.top, in.right, in.bottom,
+                           shown.x, shown.y);
+                check(EqualRect(&gotSnap, &wantSnap) && shown.x == work.left && shown.y == work.top, msg);
+            }
+
             // Without a sizing border, it may still be moved, but not resized.
             SetWindowLongPtrW(w, GWL_STYLE, GetWindowLongPtrW(w, GWL_STYLE) & ~static_cast<LONG_PTR>(WS_THICKFRAME));
             SetWindowPos(w, nullptr, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-            const wchar_t* fixedWhy = env.Refusal(w, true);
+            const wchar_t* fixedWhy = env.Refusal(w, MouseAction::Resize);
             swprintf_s(msg, L"without a sizing border it may still be moved, but not resized (%s)",
                        fixedWhy ? fixedWhy : L"resizing was NOT refused");
-            check(fixedWhy != nullptr && env.Refusal(w, false) == nullptr, msg);
+            check(fixedWhy != nullptr && env.Refusal(w, MouseAction::Move) == nullptr, msg);
 
             // For the log only: another window may be on top of the test window by
             // now, and that is no failure.
@@ -1217,6 +1410,75 @@ int SelfTest(bool windows)
             const POINT mid = { (clicked.left + clicked.right) / 2, (clicked.top + clicked.bottom) / 2 };
             LogF(L"  (a click in the middle of the test window would reach %s)",
                  real->WindowAt(mid) == w ? L"it" : L"another window, on top of it");
+
+            // Sent to the back with an Alt+middle-click: behind a window (b) it was in
+            // front of, taking a window of its own (o) along, but still in front of the
+            // desktop; and as it had the keyboard, b - now under the pointer - gets it.
+            RECT wr = {};
+            GetWindowRect(w, &wr);
+            const HWND b = CreateWindowExW(0, dc.lpszClassName, L"WinSwapper self test - behind", WS_OVERLAPPEDWINDOW,
+                                           wr.left + 40, wr.top + 40, 400, 300, nullptr, nullptr, dc.hInstance, nullptr);
+            const HWND o = CreateWindowExW(0, dc.lpszClassName, L"WinSwapper self test - owned", WS_OVERLAPPEDWINDOW,
+                                           wr.left + 220, wr.top + 160, 300, 200, w, nullptr, dc.hInstance, nullptr);
+            check(b && o, L"two more test windows open, one of them owned by the first");
+            if (b && o)
+            {
+                const auto settle = [&](const std::vector<HWND>& wnds, auto done) {
+                    const ULONGLONG until = GetTickCount64() + 2000;
+                    for (;;)
+                    {
+                        PumpFor(20);   // the window goes back from a thread of its own, which waits on this one
+                        const std::vector<int> r = ZRanks(wnds);
+                        if (done(r) || GetTickCount64() >= until) return r;
+                    }
+                };
+                ShowWindow(b, SW_SHOWNOACTIVATE);
+                ShowWindow(o, SW_SHOWNOACTIVATE);
+                SetForegroundWindow(w);
+                SetWindowPos(b, w, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                PumpFor(250);
+
+                const POINT            click   = { wr.left + 100, wr.top + 100 };   // over b as well
+                const bool             hadKeys = GetForegroundWindow() == w;
+                const std::vector<int> z0      = ZRanks({ w, b });
+                const bool             inFront = z0[0] >= 0 && z0[0] < z0[1];
+                const bool             lowerDn = t.OnMouse(WM_MBUTTONDOWN, click, MOD_ALT, false);
+                const bool             lowerUp = t.OnMouse(WM_MBUTTONUP,   click, 0, false);
+                const std::vector<int> z = settle({ w, o, b, shell }, [&](const std::vector<int>& r) {
+                    return r[2] >= 0 && r[2] < r[1] && r[1] < r[0] && (!hadKeys || GetForegroundWindow() == b);
+                });
+                const bool behind = z[2] >= 0 && z[2] < z[1] && z[1] < z[0];
+                const bool desk   = !shell || z[3] < 0 || z[0] < z[3];
+                swprintf_s(msg, L"an Alt+middle-click sent it %s behind the window it was in front of (%s), with "
+                                L"its own window in front of it (%s) and the desktop still behind it (%s)",
+                           inFront ? L"from the front" : L"(NOT in front to begin with)", behind ? L"yes" : L"NO",
+                           z[1] < z[0] ? L"yes" : L"NO", desk ? L"yes" : L"NO");
+                check(inFront && lowerDn && lowerUp && behind && desk, msg);
+                if (hadKeys)
+                    check(GetForegroundWindow() == b, L"and the keyboard went to the window now under the pointer");
+                else
+                    LogF(L"  (the keyboard was elsewhere to begin with, so handing it on is not checked)");
+
+                // Kept on top of others, it goes behind only those that are too, and
+                // stays on top of the rest.
+                SetWindowPos(b, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                SetWindowPos(w, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                PumpFor(150);
+                const std::vector<int> zt0      = ZRanks({ w, b });
+                const bool             topFront = zt0[0] >= 0 && zt0[0] < zt0[1];
+                t.OnMouse(WM_MBUTTONDOWN, click, MOD_ALT, false);
+                t.OnMouse(WM_MBUTTONUP,   click, 0, false);
+                const std::vector<int> zt =
+                    settle({ w, b }, [](const std::vector<int>& r) { return r[1] >= 0 && r[1] < r[0]; });
+                const bool wentBack = topFront && zt[1] >= 0 && zt[1] < zt[0];
+                const bool stillTop = (GetWindowLongPtrW(w, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+                swprintf_s(msg, L"one kept on top went behind another kept on top (%s) and is still kept on top (%s)",
+                           wentBack ? L"yes" : L"NO", stillTop ? L"yes" : L"NO");
+                check(wentBack && stillTop, msg);
+                PumpFor(100);
+            }
+            if (o) DestroyWindow(o);
+            if (b) DestroyWindow(b);
 
             DestroyWindow(w);
             PumpFor(100);
