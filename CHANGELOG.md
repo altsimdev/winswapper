@@ -4,6 +4,12 @@ What changed in each release. When a version is tagged, the release workflow pub
 whose heading matches the tag as that release's notes - and refuses to publish a release that has
 no section here, so add the entry before pushing the tag.
 
+## Unreleased
+
+- **Fix:** when Windows signed out, shut down or restarted, the tray log just stopped, with nothing
+  to tell that from a crash. It now says which it was - or that an installer asked WinSwapper to
+  close.
+
 ## 1.09 - 2026-11-07
 
 - **New:** hold Alt and drag anywhere in a window to move it, as on many Linux desktops - no need

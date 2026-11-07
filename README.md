@@ -200,7 +200,11 @@ Logs are in `%LOCALAPPDATA%\WinSwapper\`:
 
 - `winswapper.log` — the tray app's log, which *Open log* shows. It accumulates across runs; once it
   passes 1 MB it is renamed to `winswapper.old.log` and a fresh one begins. That is checked as it
-  runs, not only at start-up, since with *Start with Windows* on it can run for weeks.
+  runs, not only at start-up, since with *Start with Windows* on it can run for weeks. When Windows
+  signs out, shuts down or restarts, or an installer asks the app to close, the log says so as it
+  goes; an exit from the menu ends with `WinSwapper exited.` A log that stops without either means
+  the app was ended some other way — from Task Manager, say. Up to 1.09 a sign-out was not logged,
+  and the log just stopped.
 - `winswapper-cli.log` — the latest command-line run only. It is a separate file because the tray
   app keeps its own log open while it runs, which used to lock command-line runs out of a shared one
   and lose their output.

@@ -443,6 +443,29 @@ static void ShowMenu()
 
 // ---------------------------------------------------------------- window ----
 
+// When Windows signed out or shut down, the tray log used to just stop, which looked
+// like a crash - or like a run that was never logged at all. Now it says why. Windows
+// does not say whether it is shutting down or restarting.
+static void LogSessionEnd(bool ending, LPARAM lp)
+{
+    const bool closeApp = (lp & ENDSESSION_CLOSEAPP) != 0;   // Restart Manager, for an installer
+    const bool logOff   = (lp & ENDSESSION_LOGOFF) != 0;
+    if (ending)
+    {
+        const wchar_t* forced = (lp & ENDSESSION_CRITICAL) ? L" (forced)" : L"";
+        if (closeApp)    LogF(L"Windows asks WinSwapper to close%s, for an installer or an update. Closing.", forced);
+        else if (logOff) LogF(L"Windows is signing out%s. WinSwapper closes with it.", forced);
+        else             LogF(L"Windows is shutting down or restarting%s. WinSwapper closes with it.", forced);
+    }
+    else if (closeApp)
+        LogF(L"Windows asked WinSwapper to close, for an installer or an update, but that was called off. "
+             L"WinSwapper carries on.");
+    else if (logOff)
+        LogF(L"Windows was going to sign out, but that was called off. WinSwapper carries on.");
+    else
+        LogF(L"Windows was going to shut down or restart, but that was called off. WinSwapper carries on.");
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     // Explorer restarted: the shell forgot our icon, so put it back.
@@ -496,6 +519,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case kDragLogMessage:
         for (const std::wstring& line : DragTakeLog())
             LogF(L"%s", line.c_str());
+        return 0;
+
+    // Sent to every top-level window, shown or not - one more reason this window is
+    // not message-only. WinSwapper has nothing to save, so it never stands in the way.
+    case WM_QUERYENDSESSION:
+        return TRUE;
+
+    case WM_ENDSESSION:
+        LogSessionEnd(wp != FALSE, lp);
+        // Windows may end the process any time after this returns, so it closes now,
+        // the ordinary way: WM_DESTROY stops watching the mouse, takes the icon away
+        // and ends the message loop, which logs the exit.
+        if (wp) DestroyWindow(hwnd);
         return 0;
 
     case WM_DESTROY:
