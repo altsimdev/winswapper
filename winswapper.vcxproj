@@ -117,6 +117,7 @@
     <ClCompile Include="src\tray.cpp" />
     <ClCompile Include="src\selftest.cpp" />
     <ClCompile Include="src\settings.cpp" />
+    <ClCompile Include="src\watch.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\drag.h" />
@@ -125,6 +126,7 @@
     <ClInclude Include="src\tray.h" />
     <ClInclude Include="src\selftest.h" />
     <ClInclude Include="src\settings.h" />
+    <ClInclude Include="src\watch.h" />
     <ClInclude Include="res\resource.h" />
   </ItemGroup>
   <ItemGroup>

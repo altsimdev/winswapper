@@ -143,8 +143,13 @@ Notepad. Whenever WinSwapper finds that file missing or blank — when it starts
 settings* and *Edit settings* — it writes one that explains every setting, showing each at its
 default, with examples, all commented out: delete the `;` at the start of a line to use it. Whatever
 stays commented out keeps its default. A file with anything else in it, even only a comment, is
-never touched, so nothing you write there is lost. After saving, choose *Reload settings* — no
-restart needed.
+never touched, so nothing you write there is lost.
+
+Saving the file applies it at once — WinSwapper watches it — and a notification shows the settings
+then in use, or what is wrong with them. A save that changes only comments, or nothing, applies
+nothing and shows nothing. Emptied or deleted while WinSwapper runs, the file means the defaults
+straight away, and is written out afresh at the next start, *Reload settings* or *Edit settings*.
+*Reload settings* also tries again for a hotkey another app had taken.
 
 A file written by 1.09 or earlier has its settings written out rather than commented out, and only
 the ones that version had. It still works as it is; to get the explanations of the newer settings,
@@ -216,8 +221,9 @@ maximizes, snaps into a corner and sends to the back on the main display, with t
 behind, then — given a second display — more that it moves between your displays. The drag test
 feeds the window made-up mouse events, so the real pointer never moves.
 `--selftest --no-windows` skips just those tests: the rotation arithmetic, the icons, *Start with
-Windows* (exercised in a scratch registry key), the drag logic on made-up mouse events and the remap
-round trips all still run, and nothing on screen is disturbed. Like `--reverse`, `--no-windows` is
+Windows* (exercised in a scratch registry key), watching the settings file (in a scratch folder), the
+drag logic on made-up mouse events and the remap round trips all still run, and nothing on screen is
+disturbed. Like `--reverse`, `--no-windows` is
 an error with any other mode.
 
 `--selftest` exits 0 when every check ran and passed, 3 when it passed everything it ran but skipped
@@ -372,6 +378,17 @@ would be gone. Nor is one whose program is on the `Skip` list, and a window with
 (`WS_THICKFRAME`) is not resized. The press goes through untouched, and the log says why. The same
 goes for sending a window to the back.
 
+**Watching the settings.** A thread waits on `ReadDirectoryChangesW` for the folder `settings.ini`
+is in, rather than for the file, so that it sees the file deleted, created or replaced by another as
+well as written to — editors save in each of those ways. Changes to the folder's other files, such
+as the log, are passed over. A save is often several changes in a row, so the file is read only once
+it has been left alone for 0.4 seconds, and if whatever saved it still has it open, it is tried
+again every second for half a minute. Even then it is read only if it looks different from when it
+was last read — there or not, when it was last written, how big it is — which also keeps
+WinSwapper's own writing of the file from setting off a reload. A reload that leaves every setting
+as it was changes nothing and shows nothing. A file emptied or deleted is not written out again
+until WinSwapper starts or is asked to, since whatever emptied it may not be done with it.
+
 ## Known limitations
 
 - **Elevated windows cannot be moved.** A process running as you cannot reposition a window owned
@@ -411,8 +428,6 @@ goes for sending a window to the back.
   pixels. If displays run different scaling factors, applications will re-layout their contents on
   arrival, which the proportional mapping accounts for but cannot make invisible. A window dragged
   across to such a display may change size as it arrives, and the pointer's grip on it shift.
-- **Settings apply when reloaded.** Editing `settings.ini` changes nothing until *Reload settings* or
-  a restart; the file is not watched.
 - **Store apps are ignored together.** The windows of packaged (Microsoft Store) apps all belong to
   `ApplicationFrameHost.exe`, so ignoring one of them means ignoring all of them.
 - **Displays are matched by position, not identity.** Plugging in or unplugging a display changes
@@ -427,6 +442,7 @@ src/swapper.cpp   display and window enumeration, remap arithmetic, applying mov
 src/drag.cpp      the mouse: the hook, which presses to take, moving, resizing, snapping and lowering
 src/log.cpp       log files plus console output for the command-line modes
 src/settings.cpp  settings.ini: hotkey and drag-key syntax, program lists, reading and writing the file
+src/watch.cpp     watching settings.ini, so that saving it applies it
 src/tray.cpp      which icon to show, and the Start with Windows setting
 src/selftest.cpp  --selftest, with --no-windows to skip everything that opens a window
 res/app.manifest  Per-Monitor-V2 DPI awareness, common controls v6, asInvoker

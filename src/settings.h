@@ -45,6 +45,9 @@ struct Settings
 
 Settings DefaultSettings();
 
+// Whether every setting is the same in both, with the program lists in the same order.
+bool SameSettings(const Settings& a, const Settings& b);
+
 // The most Snap may be: more would make a window cling to an edge it is nowhere near.
 const int kMaxSnap = 100;
 

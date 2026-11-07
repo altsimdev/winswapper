@@ -15,8 +15,8 @@ const wchar_t kDefaultText[] =
     L";\r\n"
     L"; Each setting below is shown at its default, and some with examples, commented out\r\n"
     L"; by the ; at the start of the line. To use one, delete its ; and change the value\r\n"
-    L"; as you like; whatever stays commented out keeps its default. Then save this file\r\n"
-    L"; and choose \"Reload settings\" from WinSwapper's tray menu.\r\n"
+    L"; as you like; whatever stays commented out keeps its default. Saving this file\r\n"
+    L"; applies it straight away.\r\n"
     L"\r\n"
     L"[Hotkeys]\r\n"
     L"; Rotate every window one display to the left, or to the right. A hotkey is\r\n"
@@ -176,6 +176,13 @@ Settings DefaultSettings()
     s.lowerMods   = MOD_ALT;
     s.snap        = 10;
     return s;
+}
+
+bool SameSettings(const Settings& a, const Settings& b)
+{
+    return a.rotateLeft == b.rotateLeft && a.rotateRight == b.rotateRight && a.ignore == b.ignore &&
+           a.moveMods == b.moveMods && a.resizeMods == b.resizeMods && a.lowerMods == b.lowerMods &&
+           a.snap == b.snap && a.dragSkip == b.dragSkip;
 }
 
 bool ParseHotkey(const std::wstring& text, Hotkey& out, std::wstring& why)
@@ -493,7 +500,8 @@ std::wstring SettingsPath()
 
 Settings LoadSettings(const std::wstring& path, std::vector<std::wstring>& problems)
 {
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    // Shared every way, so that an editor saving at that very moment is never refused.
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE)
     {

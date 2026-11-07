@@ -6,6 +6,7 @@
 #include "settings.h"
 #include "swapper.h"
 #include "tray.h"
+#include "watch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -57,6 +58,26 @@ static void PumpFor(DWORD ms)
     }
 }
 
+// Waits up to `ms` for `msg` to be posted to `hwnd` and, once one has been, `settle` more
+// for any that follow: a save comes as a few changes. Returns how many came, and the
+// last non-zero wParam among them in `wp`.
+static int AwaitPosted(HWND hwnd, UINT msg, DWORD ms, DWORD settle, WPARAM* wp = nullptr)
+{
+    int       n   = 0;
+    ULONGLONG end = GetTickCount64() + ms;
+    for (;;)
+    {
+        MSG m;
+        while (PeekMessageW(&m, hwnd, msg, msg, PM_REMOVE))
+        {
+            if (wp && m.wParam) *wp = m.wParam;
+            if (n++ == 0) end = std::min(end, GetTickCount64() + settle);
+        }
+        if (GetTickCount64() >= end) return n;
+        Sleep(10);
+    }
+}
+
 // Pumps messages until h's rect is `want` or `ms` have passed, and returns where it is.
 // Dragging moves a window from a thread of its own, which waits on this one's messages.
 static RECT SettleAt(HWND h, const RECT& want, DWORD ms)
@@ -90,13 +111,6 @@ static bool SameRects(const std::vector<RECT>& a, const std::vector<RECT>& b)
 static bool IsRect(const RECT& r, LONG left, LONG top, LONG right, LONG bottom)
 {
     return r.left == left && r.top == top && r.right == right && r.bottom == bottom;
-}
-
-static bool SameSettings(const Settings& a, const Settings& b)
-{
-    return a.rotateLeft == b.rotateLeft && a.rotateRight == b.rotateRight && a.ignore == b.ignore &&
-           a.moveMods == b.moveMods && a.resizeMods == b.resizeMods && a.lowerMods == b.lowerMods &&
-           a.snap == b.snap && a.dragSkip == b.dragSkip;
 }
 
 // Replaces a file's contents with exactly these bytes.
@@ -802,6 +816,119 @@ int SelfTest(bool windows)
               L"past the memory cap, later lines are counted, and the note says how many were lost");
 
         DeleteFileW(path.c_str());
+    }
+
+    // Watching settings.ini, so that saving it applies it: whatever is done to the file is
+    // noticed, and the other files in its folder are not. In a folder of the test's own,
+    // never the real one, with a message-only window to be told.
+    LogF(L"Watching the settings file:");
+    {
+        wchar_t tmp[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, tmp);
+        const std::wstring dir   = std::wstring(tmp) + L"winswapper-selftest-watch";
+        const std::wstring file  = dir + L"\\settings.ini";
+        const std::wstring other = dir + L"\\other.txt";
+        const std::wstring fresh = dir + L"\\settings.new";
+        const auto         clear = [&]() {
+            DeleteFileW(file.c_str());
+            DeleteFileW(other.c_str());
+            DeleteFileW(fresh.c_str());
+        };
+        const auto bytes = [](const std::string& s) { return std::vector<unsigned char>(s.begin(), s.end()); };
+        CreateDirectoryW(dir.c_str(), nullptr);
+        clear();
+
+        FileStamp  none, first, again, second;
+        const bool toldNone = StampOf(file, none);
+        PutFile(file, bytes("[Drag]\r\nSnap = 5\r\n"));
+        StampOf(file, first);
+        StampOf(file, again);
+        PutFile(file, bytes("[Drag]\r\nSnap = 25\r\n"));
+        StampOf(file, second);
+        check(toldNone && !none.exists && first.exists && first.size == 18 && first == again && second != first,
+              L"a file's stamp says whether it is there, and changes when it is written");
+
+        FileStamp       now;
+        const FileCheck same = CheckFile(file, second, now);
+        PutFile(file, bytes("[Drag]\r\nSnap = 100\r\n"));
+        // Held with no sharing at all, as a program still writing it can.
+        const HANDLE    held = CreateFileW(file.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                           FILE_ATTRIBUTE_NORMAL, nullptr);
+        const FileCheck busy = CheckFile(file, second, now);
+        if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
+        const FileCheck changed = CheckFile(file, second, now);
+        const FileStamp latest  = now;
+        const FileCheck settled = CheckFile(file, latest, now);
+        DeleteFileW(file.c_str());
+        const FileCheck gone = CheckFile(file, latest, now);
+        check(same == FileCheck::Same && held != INVALID_HANDLE_VALUE && busy == FileCheck::Busy &&
+                  changed == FileCheck::Changed && settled == FileCheck::Same && gone == FileCheck::Changed &&
+                  !now.exists,
+              L"compared with how it was, a file is the same, changed or deleted, or busy while held shut");
+
+        WNDCLASSEXW wc   = {};
+        wc.cbSize        = sizeof(wc);
+        wc.lpfnWndProc   = DefWindowProcW;
+        wc.hInstance     = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"WinSwapperSelfTestWatch";
+        RegisterClassExW(&wc);
+        const HWND to   = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                                          wc.hInstance, nullptr);
+        const UINT kMsg = WM_APP + 9;
+
+        FileWatch  watch;
+        DWORD      err     = 0;
+        const bool started = to && watch.Start(file, to, kMsg, err);
+        PutFile(file, bytes("[Hotkeys]\r\nRotateLeft = none\r\n"));
+        const int created = AwaitPosted(to, kMsg, 2000, 150);
+        PutFile(file, bytes("[Hotkeys]\r\nRotateRight = none\r\n"));
+        // Settled for longer, so nothing from this write is late enough to count as the next.
+        const int written = AwaitPosted(to, kMsg, 2000, 300);
+        PutFile(other, bytes("other"));
+        PutFile(fresh, bytes("[Drag]\r\nSnap = 0\r\n"));
+        const int others = AwaitPosted(to, kMsg, 300, 0);
+        if (!started) LogF(L"    could not watch %s, error %lu", dir.c_str(), err);
+        check(started && watch.Watching() && created > 0 && written > 0 && others == 0,
+              L"a watched file is noticed being created and written, and other files in its folder are not");
+
+        const bool moved    = MoveFileExW(fresh.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
+        const int  replaced = AwaitPosted(to, kMsg, 2000, 300);
+        DeleteFileW(file.c_str());
+        const int deleted = AwaitPosted(to, kMsg, 2000, 150);
+        check(moved && replaced > 0 && deleted > 0, L"so is another file renamed over it, and its deletion");
+
+        watch.Stop();
+        AwaitPosted(to, kMsg, 0, 0);   // anything told before it stopped
+        PutFile(file, bytes("[Ignore]\r\nslack.exe\r\n"));
+        const int afterStop = AwaitPosted(to, kMsg, 300, 0);
+        check(!watch.Watching() && afterStop == 0, L"once the watch is stopped, nothing more is told");
+
+        FileWatch  nowhere;
+        DWORD      whyNot  = 0;
+        const bool watched = nowhere.Start(dir + L"\\missing\\settings.ini", to, kMsg, whyNot);
+        check(!watched && !nowhere.Watching() && (whyNot == ERROR_FILE_NOT_FOUND || whyNot == ERROR_PATH_NOT_FOUND),
+              L"a folder that is not there cannot be watched, and the reason is given");
+
+        // The folder itself deleted: the watch ends, with the reason, rather than carrying
+        // on blind - or spinning.
+        const bool restarted = watch.Start(file, to, kMsg, err);
+        clear();
+        const bool removed = RemoveDirectoryW(dir.c_str()) != FALSE;
+        const DWORD removeErr = removed ? 0 : GetLastError();
+        WPARAM     ended   = 0;
+        const int  told    = AwaitPosted(to, kMsg, 2000, 500, &ended);
+        const bool stopped = !watch.Watching();
+        LogF(L"    folder deleted: %s (error %lu); %d message(s), ending with error %lu; %s",
+             removed ? L"yes" : L"no", removeErr, told, static_cast<DWORD>(ended),
+             stopped ? L"watch over" : L"still watching");
+        check(restarted && removed && ended != 0 && told < 10 && stopped,
+              L"the watch ends, and says why, when the folder it watches is deleted");
+        watch.Stop();
+
+        if (to) DestroyWindow(to);
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
+        clear();
+        RemoveDirectoryW(dir.c_str());
     }
 
     // Owned windows - dialogs, floating palettes - move only with the window they

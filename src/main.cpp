@@ -10,8 +10,13 @@
 #include "settings.h"
 #include "swapper.h"
 #include "tray.h"
+#include "watch.h"
 
 #define WM_TRAYICON (WM_APP + 1)
+
+// From g_settingsWatch: settings.ini may have changed - or, with an error as wParam, can
+// no longer be watched. WM_APP + 2 is kDragLogMessage.
+static const UINT kSettingsMessage = WM_APP + 3;
 
 static const UINT kHotkeyLeft  = 1;
 static const UINT kHotkeyRight = 2;
@@ -22,6 +27,15 @@ static const UINT kTrayId      = 1;
 // nothing else is logged for hours.
 static const UINT kLogRetryTimer   = 1;
 static const UINT kLogRetryEveryMs = 10 * 1000;
+
+// A save is often several changes in a row - the file emptied and then written, or a new
+// one written beside it and renamed over it - so settings.ini is read only once it has
+// been left alone this long. If whatever saved it still has it open, it is tried again
+// every second, for half a minute.
+static const UINT kSettingsTimer     = 2;
+static const UINT kSettingsQuietMs   = 400;
+static const UINT kSettingsBusyMs    = 1000;
+static const int  kSettingsBusyTries = 30;
 
 static HINSTANCE g_inst           = nullptr;
 static HWND      g_hwnd           = nullptr;
@@ -34,6 +48,9 @@ static bool      g_rightOk        = false;
 static bool      g_dragOn         = false;   // the mouse is being watched for dragging
 static HANDLE    g_mutex          = nullptr;
 static Settings  g_settings       = DefaultSettings();
+static FileWatch g_settingsWatch;
+static FileStamp g_settingsStamp;            // settings.ini as it was when last read
+static int       g_settingsBusy   = 0;       // checks in a row that found it still in use
 
 // ------------------------------------------------------------------ tray ----
 
@@ -318,21 +335,91 @@ static bool EnsureSettings(const std::wstring& path)
     }
 }
 
-static void LoadAndApplySettings(bool reloaded)
+enum class SettingsReason
 {
-    std::vector<std::wstring> problems;
+    Start,
+    Reload,    // Reload settings, in the tray menu
+    Changed,   // settings.ini was saved, replaced or deleted
+};
+
+static void LoadAndApplySettings(SettingsReason why)
+{
     const std::wstring path = SettingsPath();
-    EnsureSettings(path);   // if it cannot be written, the defaults still apply
+    // Not just because it changed: a file someone has just emptied or deleted is left that
+    // way, rather than written to while their editor - or Explorer - may be busy with it.
+    // If it cannot be written, the defaults still apply.
+    if (why != SettingsReason::Changed) EnsureSettings(path);
+
+    // Noted before it is read, so a save that comes in between is read in turn. Should
+    // that fail, the file is noted as missing, which any change then differs from.
+    StampOf(path, g_settingsStamp);
+    const Settings            before = g_settings;
+    std::vector<std::wstring> problems;
     g_settings = LoadSettings(path, problems);
 
+    // Saved with only its comments changed, say, or not changed at all: nothing to apply,
+    // and nothing to tell.
+    if (why == SettingsReason::Changed && problems.empty() && SameSettings(g_settings, before))
+    {
+        LogF(L"None of the settings changed.");
+        return;
+    }
+
     const bool exists = GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-    LogF(L"Settings %s %s%s; ignoring %zu program(s).", reloaded ? L"reloaded from" : L"read from",
-         path.c_str(), exists ? L"" : L" (not created yet, so the defaults)", g_settings.ignore.size());
+    LogF(L"Settings %s %s%s; ignoring %zu program(s).",
+         why == SettingsReason::Start ? L"read from" : L"reloaded from", path.c_str(),
+         exists ? L"" : L" (missing, so the defaults)", g_settings.ignore.size());
 
     const std::wstring lost   = RegisterHotkeys();
     const bool         dragOk = ApplyDragging();
     UpdateTrayTip();
-    ReportSettings(problems, lost, dragOk, reloaded);
+    ReportSettings(problems, lost, dragOk, why != SettingsReason::Start);
+}
+
+// Started before the settings are first read, so no change made in between goes unseen.
+static void WatchSettings()
+{
+    const std::wstring path = SettingsPath();
+    DWORD              err  = 0;
+    if (g_settingsWatch.Start(path, g_hwnd, kSettingsMessage, err))
+        LogF(L"Watching %s, so saving it applies it straight away.", path.c_str());
+    else
+        LogF(L"Could not watch %s for changes, error %lu. After saving it, choose Reload settings.",
+             path.c_str(), err);
+}
+
+// settings.ini changed a moment ago and has been left alone since. Reads it again - unless
+// it is back as it was, or whatever changed it still has it open.
+static void CheckSettings()
+{
+    KillTimer(g_hwnd, kSettingsTimer);
+
+    const std::wstring path = SettingsPath();
+    FileStamp          now;
+    switch (CheckFile(path, g_settingsStamp, now))
+    {
+    case FileCheck::Same:
+        break;
+
+    case FileCheck::Busy:
+        if (++g_settingsBusy < kSettingsBusyTries)
+        {
+            if (g_settingsBusy == 1) LogF(L"%s changed, but is in use; trying again every second.", path.c_str());
+            SetTimer(g_hwnd, kSettingsTimer, kSettingsBusyMs, nullptr);
+            return;
+        }
+        LogF(L"%s is still in use, so it was not read. Once it is free, choose Reload settings.", path.c_str());
+        Balloon(L"settings.ini changed, but another program is keeping it from being read. "
+                L"Once it is free, choose Reload settings.", NIIF_WARNING);
+        break;
+
+    case FileCheck::Changed:
+        if (now.exists) LogF(L"%s changed.", path.c_str());
+        else            LogF(L"%s was deleted, or moved away.", path.c_str());
+        LoadAndApplySettings(SettingsReason::Changed);
+        break;
+    }
+    g_settingsBusy = 0;
 }
 
 static void EditSettings()
@@ -409,6 +496,9 @@ static std::wstring HotkeyState(const Hotkey& h, bool registered)
 static void ShowAbout()
 {
     const std::wstring logProblem = LogRetry() ? std::wstring() : L"\n" + LogProblem();
+    const wchar_t*     unwatched  = g_settingsWatch.Watching()
+                                        ? L""
+                                        : L"\n(not watched for changes: after saving it, choose Reload settings)";
 
     // Truncated to fit rather than swprintf_s'd: two paths and two hotkeys from the
     // settings make the length depend on things outside this code.
@@ -431,7 +521,7 @@ static void ShowAbout()
                L"Ignoring: %zu program(s)\n"
                L"Mouse: %s\n"
                L"Snapping: %s\n\n"
-               L"Settings: %s\n"
+               L"Settings: %s%s\n"
                L"Log: %s%s\n\n"
                L"Command line: --list, --dry-run, --rotate, --reverse, --selftest, --no-windows",
                HotkeyState(g_settings.rotateLeft,  g_leftOk).c_str(),
@@ -439,7 +529,7 @@ static void ShowAbout()
                g_settings.ignore.size(),
                MouseState().c_str(),
                SnapState().c_str(),
-               SettingsPath().c_str(),
+               SettingsPath().c_str(), unwatched,
                LogFilePath(), logProblem.c_str());
     MessageBoxW(nullptr, msg, L"About WinSwapper", MB_OK | MB_ICONINFORMATION);
 }
@@ -542,7 +632,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_RIGHT:   DoRotate(Rotation::Right); break;
         case IDM_STARTUP: ToggleStartup();           break;
         case IDM_EDIT_SETTINGS:   EditSettings();             break;
-        case IDM_RELOAD_SETTINGS: LoadAndApplySettings(true); break;
+        case IDM_RELOAD_SETTINGS: LoadAndApplySettings(SettingsReason::Reload); break;
         case IDM_LOG:     OpenLog();                 break;
         case IDM_ABOUT:   ShowAbout();               break;
         case IDM_EXIT:    DestroyWindow(hwnd);       break;
@@ -556,12 +646,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_TIMER:
-        if (wp == kLogRetryTimer && LogRetry()) KillTimer(hwnd, kLogRetryTimer);
+        if (wp == kLogRetryTimer)
+        {
+            if (LogRetry()) KillTimer(hwnd, kLogRetryTimer);
+        }
+        else if (wp == kSettingsTimer)
+            CheckSettings();
         return 0;
 
     case kDragLogMessage:
         for (const std::wstring& line : DragTakeLog())
             LogF(L"%s", line.c_str());
+        return 0;
+
+    case kSettingsMessage:
+        if (wp != 0)
+        {
+            g_settingsWatch.Stop();
+            LogF(L"Stopped watching %s for changes, error %lu. After saving it, choose Reload settings.",
+                 SettingsPath().c_str(), static_cast<DWORD>(wp));
+            return 0;
+        }
+        // Each change puts the reading off again, until the file is left alone.
+        SetTimer(hwnd, kSettingsTimer, kSettingsQuietMs, nullptr);
         return 0;
 
     // Sent to every top-level window, shown or not - one more reason this window is
@@ -578,6 +685,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_DESTROY:
+        g_settingsWatch.Stop();
         DragStop();
         for (const std::wstring& line : DragTakeLog())   // a drag that ended just now
             LogF(L"%s", line.c_str());
@@ -748,7 +856,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     // another app leaves the other working. The defaults, Ctrl+Alt+S and
     // Ctrl+Alt+Shift+S, are distinct to RegisterHotKey, so holding Shift picks the
     // reverse rotation on its own.
-    LoadAndApplySettings(false);
+    WatchSettings();
+    LoadAndApplySettings(SettingsReason::Start);
 
     // Every line tries the log again anyway, but an idle tray app logs nothing for
     // hours, and the start-up lines are the ones that say what it is running with.

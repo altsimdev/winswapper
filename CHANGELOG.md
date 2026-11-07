@@ -19,6 +19,9 @@ no section here, so add the entry before pushing the tag.
   and shown at its default, with examples, all commented out: delete the `;` to use one. Before,
   only *Edit settings* wrote the file, and an empty one stayed empty. A file with anything in it is
   never touched.
+- **New:** saving the settings file applies it straight away, with a notification showing the
+  settings now in use, or what is wrong with them. Before, nothing changed until *Reload settings*
+  or a restart. A save that changes no setting goes unremarked.
 - **Fix:** when Windows signed out, shut down or restarted, the tray log just stopped, with nothing
   to tell that from a crash. It now says which it was - or that an installer asked WinSwapper to
   close.
