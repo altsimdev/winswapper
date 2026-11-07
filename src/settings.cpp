@@ -26,13 +26,16 @@ const wchar_t kDefaultText[] =
     L"; slack.exe\r\n"
     L"\r\n"
     L"[Drag]\r\n"
-    L"; Hold this and drag anywhere in a window with the left mouse button to move it:\r\n"
-    L"; Ctrl, Alt, Shift and Win joined with +, such as Ctrl+Alt, including at least one\r\n"
-    L"; of Ctrl, Alt or Win. Write \"none\" to turn dragging off.\r\n"
-    L"Move = Alt\r\n"
+    L"; Hold these keys and drag anywhere in a window: with the left mouse button to move\r\n"
+    L"; it, with the right to resize it from the corner or edge nearest the pointer. Ctrl,\r\n"
+    L"; Alt, Shift and Win joined with +, such as Ctrl+Alt, including at least one of\r\n"
+    L"; Ctrl, Alt or Win. Write \"none\" to turn either off.\r\n"
+    L"Move   = Alt\r\n"
+    L"Resize = Alt\r\n"
     L"; A click without a drag still reaches the program, but a drag of its own with the\r\n"
-    L"; same keys - column selection in Notepad++ or Visual Studio, say - no longer does.\r\n"
-    L"; Leave such programs alone with a Skip line each, named as under [Ignore]:\r\n"
+    L"; same keys - column selection in Notepad++ or Visual Studio, or sizing the brush\r\n"
+    L"; in Photoshop, say - no longer does. Leave such programs alone with a Skip line\r\n"
+    L"; each, named as under [Ignore]:\r\n"
     L"; Skip = notepad++.exe\r\n";
 
 struct NamedKey
@@ -140,7 +143,8 @@ Settings DefaultSettings()
     Settings s;
     s.rotateLeft  = { MOD_CONTROL | MOD_ALT,             'S' };
     s.rotateRight = { MOD_CONTROL | MOD_ALT | MOD_SHIFT, 'S' };
-    s.dragMods    = MOD_ALT;
+    s.moveMods    = MOD_ALT;
+    s.resizeMods  = MOD_ALT;
     return s;
 }
 
@@ -250,7 +254,7 @@ bool ParseModifiers(const std::wstring& text, UINT& out, std::wstring& why)
 
     if (!(mods & (MOD_CONTROL | MOD_ALT | MOD_WIN)))
     {
-        why = L"needs Ctrl, Alt or Win, since a Shift+drag already selects text";
+        why = L"needs Ctrl, Alt or Win, since programs already use Shift with the mouse";
         return false;
     }
     out = mods;
@@ -363,14 +367,17 @@ Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& prob
             const std::wstring key   = Trim(line.substr(0, eq));
             const std::wstring value = Trim(line.substr(eq + 1));
 
-            if (Same(key, L"Move"))
+            UINT* target = Same(key, L"Move")   ? &s.moveMods
+                         : Same(key, L"Resize") ? &s.resizeMods
+                         : nullptr;
+            if (target)
             {
                 UINT         mods = 0;
                 std::wstring why;
-                if (ParseModifiers(value, mods, why)) s.dragMods = mods;
+                if (ParseModifiers(value, mods, why)) *target = mods;
                 else
                     problems.push_back(LineNo(lineNo) + key + L" '" + value + L"' " + why +
-                                       L"; using " + FormatModifiers(s.dragMods));
+                                       L"; using " + FormatModifiers(*target));
             }
             else if (Same(key, L"Skip"))
             {
@@ -387,7 +394,7 @@ Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& prob
             }
             else
                 problems.push_back(LineNo(lineNo) + L"unknown setting '" + key +
-                                   L"' (expected Move or Skip)");
+                                   L"' (expected Move, Resize or Skip)");
             break;
         }
         }

@@ -28,8 +28,10 @@ struct Settings
     std::vector<std::wstring> ignore;
 
     // The modifiers (MOD_* bits) that, held while dragging with the left mouse
-    // button, move the window under the pointer. 0 turns dragging off.
-    UINT dragMods = 0;
+    // button, move the window under the pointer - and with the right, resize it. 0
+    // turns that one off.
+    UINT moveMods   = 0;
+    UINT resizeMods = 0;
 
     // Programs whose windows dragging leaves alone, so that the same drag still
     // reaches them; normalised and matched as `ignore` is.

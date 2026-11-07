@@ -11,6 +11,11 @@ no section here, so add the entry before pushing the tag.
   Alt+click without a drag still reaches the program. It is on by default; a new `[Drag]` section
   in the settings changes the keys, turns it off, or leaves out programs with an Alt+drag of their
   own.
+- **New:** hold Alt and drag with the right mouse button to resize a window by the corner or side
+  nearest the pointer - no need to find its border. It stops at the window's smallest size, and a
+  maximized window first becomes an ordinary one filling the screen. An Alt+right-click without a
+  drag still opens the program's menu. It is on by default, with its own `Resize` setting under
+  `[Drag]`.
 
 ## 1.08 - 2026-11-04
 

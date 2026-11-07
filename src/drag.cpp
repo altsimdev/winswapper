@@ -2,6 +2,7 @@
 
 #include "swapper.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cwchar>
@@ -28,10 +29,63 @@ RECT RestoredUnderPointer(const RECT& maximized, SIZE normal, POINT pt)
     return r;
 }
 
+UINT EdgesAt(const RECT& r, POINT pt)
+{
+    // Which third of the span from lo to hi p is in: -1, 0 or 1. An empty span is all
+    // middle.
+    const auto third = [](LONG p, LONG lo, LONG hi) {
+        const long long span = static_cast<long long>(hi) - lo;
+        const long long at   = static_cast<long long>(p) - lo;
+        if (span <= 0)          return 0;
+        if (3 * at < span)      return -1;
+        if (3 * at >= 2 * span) return 1;
+        return 0;
+    };
+    // Which half: -1 or 1.
+    const auto half = [](LONG p, LONG lo, LONG hi) {
+        return 2 * (static_cast<long long>(p) - lo) < static_cast<long long>(hi) - lo ? -1 : 1;
+    };
+
+    int x = third(pt.x, r.left, r.right);
+    int y = third(pt.y, r.top,  r.bottom);
+    if (x == 0 && y == 0)
+    {
+        x = half(pt.x, r.left, r.right);
+        y = half(pt.y, r.top,  r.bottom);
+    }
+
+    UINT edges = 0;
+    if (x < 0) edges |= kEdgeLeft;
+    if (x > 0) edges |= kEdgeRight;
+    if (y < 0) edges |= kEdgeTop;
+    if (y > 0) edges |= kEdgeBottom;
+    return edges;
+}
+
+RECT ResizedRect(const RECT& r, UINT edges, POINT delta, SIZE minSize)
+{
+    RECT out = r;
+    if (edges & kEdgeLeft)   out.left   += delta.x;
+    if (edges & kEdgeRight)  out.right  += delta.x;
+    if (edges & kEdgeTop)    out.top    += delta.y;
+    if (edges & kEdgeBottom) out.bottom += delta.y;
+
+    // Too small, or even turned inside out: the dragged edge goes back far enough.
+    const auto atLeast = [](LONG& lo, LONG& hi, bool loMoves, bool hiMoves, LONG least) {
+        least = std::max(least, 1L);
+        if ((!loMoves && !hiMoves) || hi - lo >= least) return;
+        if (loMoves) lo = hi - least;
+        else         hi = lo + least;
+    };
+    atLeast(out.left, out.right,  (edges & kEdgeLeft) != 0, (edges & kEdgeRight)  != 0, minSize.cx);
+    atLeast(out.top,  out.bottom, (edges & kEdgeTop)  != 0, (edges & kEdgeBottom) != 0, minSize.cy);
+    return out;
+}
+
 // ------------------------------------------------------------- the tracker ---
 
-DragTracker::DragTracker(DragEnv& env, UINT mods, SIZE threshold)
-    : env_(env), mods_(mods), threshold_(threshold)
+DragTracker::DragTracker(DragEnv& env, UINT moveMods, UINT resizeMods, SIZE threshold, SIZE minSize)
+    : env_(env), moveMods_(moveMods), resizeMods_(resizeMods), threshold_(threshold), minSize_(minSize)
 {
 }
 
@@ -41,30 +95,10 @@ bool DragTracker::OnMouse(UINT msg, POINT pt, UINT held, bool replay)
 
     switch (msg)
     {
-    case WM_LBUTTONDOWN:
-    {
-        // A press while the last one is still down means its release went missing -
-        // to a secure desktop, say - so that drag ends where it is.
-        if (state_ != State::Idle) Cancel();
-        if (mods_ == 0 || held != mods_) return false;
-
-        const HWND h = env_.WindowAt(pt);
-        if (!h) return false;
-        if (const wchar_t* why = env_.Refusal(h))
-        {
-            env_.Refused(h, why);
-            return false;
-        }
-
-        target_ = h;
-        down_   = pt;
-        state_  = State::Pressed;
-
-        // The program never sees this press, so to Windows, Alt or Win would look
-        // pressed and released on its own, which opens the menu bar or Start.
-        if (mods_ & (MOD_ALT | MOD_WIN)) env_.MaskModifier();
-        return true;
-    }
+    case WM_LBUTTONDOWN: return Press(false, pt, held);
+    case WM_RBUTTONDOWN: return Press(true,  pt, held);
+    case WM_LBUTTONUP:   return Release(false, pt);
+    case WM_RBUTTONUP:   return Release(true,  pt);
 
     case WM_MOUSEMOVE:
         if (state_ == State::Pressed &&
@@ -73,23 +107,72 @@ bool DragTracker::OnMouse(UINT msg, POINT pt, UINT held, bool replay)
         if (state_ == State::Dragging) Follow(pt);
         return false;   // never taken: the pointer itself has to move
 
-    case WM_LBUTTONUP:
-        if (state_ == State::Idle) return false;
-        if (state_ == State::Pressed)
-        {
-            // Not a drag after all, so the program gets its click - late, but whole.
-            state_  = State::Idle;
-            target_ = nullptr;
-            env_.ReplayClick();
-            return true;
-        }
-        Follow(pt);
-        Finish();
-        return true;   // its press was taken, so its release is too
-
     default:
         return false;
     }
+}
+
+bool DragTracker::Press(bool right, POINT pt, UINT held)
+{
+    const UINT button = right ? kRight : kLeft;
+
+    // A press of a button whose last press is still taken means that release went
+    // missing - to a secure desktop, say - so the drag it began ends where it is.
+    if (taken_ & button)
+    {
+        taken_ &= ~button;
+        if (state_ != State::Idle && resizing_ == right) Cancel();
+    }
+
+    // The other button, while a drag is under way or about to be: taken as well, and
+    // its release with it, so the program gets neither half of a stray click.
+    if (state_ != State::Idle)
+    {
+        taken_ |= button;
+        return true;
+    }
+
+    const UINT mods = right ? resizeMods_ : moveMods_;
+    if (mods == 0 || held != mods) return false;
+
+    const HWND h = env_.WindowAt(pt);
+    if (!h) return false;
+    if (const wchar_t* why = env_.Refusal(h, right))
+    {
+        env_.Refused(h, why, right);
+        return false;
+    }
+
+    target_   = h;
+    down_     = pt;
+    resizing_ = right;
+    state_    = State::Pressed;
+    taken_   |= button;
+
+    // The program never sees this press, so to Windows, Alt or Win would look
+    // pressed and released on its own, which opens the menu bar or Start.
+    if (mods & (MOD_ALT | MOD_WIN)) env_.MaskModifier();
+    return true;
+}
+
+bool DragTracker::Release(bool right, POINT pt)
+{
+    const UINT button = right ? kRight : kLeft;
+    if (!(taken_ & button)) return false;
+    taken_ &= ~button;   // its press was taken, so its release is too
+
+    if (state_ == State::Idle || resizing_ != right) return true;
+    if (state_ == State::Pressed)
+    {
+        // Not a drag after all, so the program gets its click - late, but whole.
+        state_  = State::Idle;
+        target_ = nullptr;
+        env_.ReplayClick(right);
+        return true;
+    }
+    Follow(pt);
+    Finish();
+    return true;
 }
 
 void DragTracker::Start(POINT pt)
@@ -98,37 +181,57 @@ void DragTracker::Start(POINT pt)
     from_     = env_.Rect(target_);
     restored_ = env_.Maximized(target_);
 
-    if (restored_)
+    // From where the button went down, so the window catches up with the pointer at
+    // once instead of trailing it by the threshold.
+    base_   = from_;
+    anchor_ = down_;
+
+    if (resizing_)
+    {
+        // A maximized window has no edges to drag, so it first becomes an ordinary
+        // window filling the same work area, and is resized from there.
+        if (restored_)
+        {
+            base_ = env_.WorkArea(target_);
+            env_.Restore(target_, base_);
+        }
+        edges_ = EdgesAt(base_, down_);
+    }
+    else if (restored_)
     {
         // As when dragging a maximized window by its title bar: it returns to its
         // normal size under the pointer, and follows from there.
-        const RECT to = RestoredUnderPointer(from_, env_.NormalSize(target_), pt);
-        env_.Restore(target_, to);
-        origin_ = { to.left, to.top };
+        base_   = RestoredUnderPointer(from_, env_.NormalSize(target_), pt);
         anchor_ = pt;
+        env_.Restore(target_, base_);
     }
-    else
-    {
-        // From where the button went down, so the window catches up with the pointer
-        // at once instead of trailing it by the threshold.
-        origin_ = { from_.left, from_.top };
-        anchor_ = down_;
-    }
-    at_    = origin_;
+    rect_  = base_;
     state_ = State::Dragging;
 }
 
 void DragTracker::Follow(POINT pt)
 {
-    const POINT to = { origin_.x + (pt.x - anchor_.x), origin_.y + (pt.y - anchor_.y) };
-    if (to.x == at_.x && to.y == at_.y) return;
-    at_ = to;
-    env_.Move(target_, to);
+    const POINT by = { pt.x - anchor_.x, pt.y - anchor_.y };
+    RECT        to = base_;
+    if (resizing_)
+    {
+        // No smaller than Windows' minimum - unless the window began smaller still.
+        const SIZE least = { std::min(minSize_.cx, base_.right - base_.left),
+                             std::min(minSize_.cy, base_.bottom - base_.top) };
+        to = ResizedRect(base_, edges_, by, least);
+    }
+    else
+        OffsetRect(&to, by.x, by.y);
+
+    if (EqualRect(&to, &rect_)) return;
+    rect_ = to;
+    if (resizing_) env_.Resize(target_, to, edges_);
+    else           env_.Move(target_, { to.left, to.top });
 }
 
 void DragTracker::Finish()
 {
-    env_.End(target_, from_, at_, restored_);
+    env_.End(target_, from_, rect_, resizing_, restored_);
     state_  = State::Idle;
     target_ = nullptr;
 }
@@ -165,6 +268,7 @@ const UINT kMsgMask   = WM_APP + 1;
 const UINT kMsgReplay = WM_APP + 2;
 
 const UINT kMoveFlags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+const UINT kSizeFlags = SWP_NOZORDER | SWP_NOACTIVATE;
 
 void BringToFront(HWND h, bool async)
 {
@@ -193,10 +297,38 @@ void Unmaximize(HWND h, const RECT& to, bool async)
     SetWindowPlacement(h, &wp);
 }
 
-// Moves one window through one drag, on a thread of its own. A program slow to move
-// its window - or hung - then holds up only that thread: never the hook, and so never
-// the pointer. Positions that arrive while one is being applied replace each other, so
-// only the newest is applied next and the window never falls behind.
+// Resizes h to r, `edges` being the ones dragged. A program may keep its window larger
+// than asked - its own minimum size - or otherwise not quite as asked. A window keeps
+// its top-left corner when its size changes, so when the left or top edge is the one
+// dragged, the window is then put back against its right or bottom edge rather than
+// left to creep across the screen. Returns the size the program insisted on, in the
+// directions being dragged, where it was more than asked; 0 elsewhere.
+SIZE ApplySize(HWND h, const RECT& r, UINT edges)
+{
+    const LONG w  = r.right - r.left;
+    const LONG ht = r.bottom - r.top;
+    SetWindowPos(h, nullptr, r.left, r.top, w, ht, kSizeFlags);
+
+    SIZE insisted = {};
+    RECT got      = {};
+    if (!GetWindowRect(h, &got)) return insisted;
+    const LONG gw = got.right - got.left;
+    const LONG gh = got.bottom - got.top;
+    if ((edges & (kEdgeLeft | kEdgeRight)) && gw > w)  insisted.cx = gw;
+    if ((edges & (kEdgeTop | kEdgeBottom)) && gh > ht) insisted.cy = gh;
+
+    POINT at = { got.left, got.top };
+    if ((edges & kEdgeLeft) && gw != w)  at.x = r.right  - gw;
+    if ((edges & kEdgeTop)  && gh != ht) at.y = r.bottom - gh;
+    if (at.x != got.left || at.y != got.top)
+        SetWindowPos(h, nullptr, at.x, at.y, 0, 0, kMoveFlags);
+    return insisted;
+}
+
+// Moves or resizes one window through one drag, on a thread of its own. A program slow
+// to change its window - or hung - then holds up only that thread: never the hook, and
+// so never the pointer. Positions that arrive while one is being applied replace each
+// other, so only the newest is applied next and the window never falls behind.
 class Mover
 {
 public:
@@ -209,20 +341,26 @@ public:
     void Activate();
     void Restore(const RECT& to);
     void Move(POINT topLeft);
+    void Resize(const RECT& to, UINT edges);
+    RECT Fitted(const RECT& r) const;   // r, at least as large as the program has insisted on so far
     void Finish();   // what is still waiting is applied, then the thread ends
 
 private:
     struct Shared
     {
         CRITICAL_SECTION cs;
-        HANDLE           wake     = nullptr;   // auto-reset
-        HWND             hwnd     = nullptr;
-        bool             activate = false;
-        bool             restore  = false;
-        bool             move     = false;
-        bool             finish   = false;
-        RECT             to       = {};
-        POINT            at       = {};
+        HANDLE           wake      = nullptr;   // auto-reset
+        HWND             hwnd      = nullptr;
+        bool             activate  = false;
+        bool             restore   = false;
+        bool             move      = false;
+        bool             resize    = false;
+        bool             finish    = false;
+        RECT             restoreTo = {};
+        POINT            moveTo    = {};
+        RECT             sizeTo    = {};
+        UINT             edges     = 0;    // the edges being dragged, for a resize
+        SIZE             least     = {};   // the smallest the program has let the window be, as found so far
 
         Shared() { InitializeCriticalSection(&cs); }
         ~Shared()
@@ -277,24 +415,37 @@ DWORD WINAPI Mover::Run(void* p)
         for (;;)
         {
             EnterCriticalSection(&s.cs);
-            const bool  activate = std::exchange(s.activate, false);
-            const bool  restore  = std::exchange(s.restore,  false);
-            const bool  move     = std::exchange(s.move,     false);
-            const bool  finish   = s.finish;
-            const RECT  to       = s.to;
-            const POINT at       = s.at;
+            const bool  activate  = std::exchange(s.activate, false);
+            const bool  restore   = std::exchange(s.restore,  false);
+            const bool  move      = std::exchange(s.move,     false);
+            const bool  resize    = std::exchange(s.resize,   false);
+            const bool  finish    = s.finish;
+            const RECT  restoreTo = s.restoreTo;
+            const POINT moveTo    = s.moveTo;
+            const RECT  sizeTo    = ResizedRect(s.sizeTo, s.edges, { 0, 0 }, s.least);
+            const UINT  edges     = s.edges;
             LeaveCriticalSection(&s.cs);
 
-            if (!activate && !restore && !move)
+            if (!activate && !restore && !move && !resize)
             {
                 if (finish) return 0;
                 break;
             }
             // Synchronous: this thread is the one place it is safe to wait on the
-            // window, and waiting is what keeps only one move outstanding.
+            // window, and waiting is what keeps only one change outstanding.
             if (activate) BringToFront(s.hwnd, false);
-            if (restore)  Unmaximize(s.hwnd, to, false);
-            if (move)     SetWindowPos(s.hwnd, nullptr, at.x, at.y, 0, 0, kMoveFlags);
+            if (restore)  Unmaximize(s.hwnd, restoreTo, false);
+            if (move)     SetWindowPos(s.hwnd, nullptr, moveTo.x, moveTo.y, 0, 0, kMoveFlags);
+            if (resize)
+            {
+                // Once the program has refused a size, later steps ask for no less, so
+                // the window is not pushed out and pulled back every time.
+                const SIZE insisted = ApplySize(s.hwnd, sizeTo, edges);
+                EnterCriticalSection(&s.cs);
+                s.least.cx = std::max(s.least.cx, insisted.cx);
+                s.least.cy = std::max(s.least.cy, insisted.cy);
+                LeaveCriticalSection(&s.cs);
+            }
         }
     }
 }
@@ -308,7 +459,7 @@ void Mover::Activate()
 void Mover::Restore(const RECT& to)
 {
     if (!threaded_) { Unmaximize(s_->hwnd, to, true); return; }
-    Queue([&to](Shared& s) { s.restore = true; s.to = to; });
+    Queue([&to](Shared& s) { s.restore = true; s.restoreTo = to; });
 }
 
 void Mover::Move(POINT topLeft)
@@ -318,7 +469,27 @@ void Mover::Move(POINT topLeft)
         SetWindowPos(s_->hwnd, nullptr, topLeft.x, topLeft.y, 0, 0, kMoveFlags | SWP_ASYNCWINDOWPOS);
         return;
     }
-    Queue([topLeft](Shared& s) { s.move = true; s.at = topLeft; });
+    Queue([topLeft](Shared& s) { s.move = true; s.moveTo = topLeft; });
+}
+
+void Mover::Resize(const RECT& to, UINT edges)
+{
+    if (!threaded_)
+    {
+        SetWindowPos(s_->hwnd, nullptr, to.left, to.top, to.right - to.left, to.bottom - to.top,
+                     kSizeFlags | SWP_ASYNCWINDOWPOS);
+        return;
+    }
+    Queue([&to, edges](Shared& s) { s.resize = true; s.sizeTo = to; s.edges = edges; });
+}
+
+RECT Mover::Fitted(const RECT& r) const
+{
+    if (!threaded_) return r;
+    EnterCriticalSection(&s_->cs);
+    const RECT out = ResizedRect(r, s_->edges, { 0, 0 }, s_->least);
+    LeaveCriticalSection(&s_->cs);
+    return out;
 }
 
 void Mover::Finish()
@@ -390,7 +561,7 @@ public:
         return h ? GetAncestor(h, GA_ROOT) : nullptr;
     }
 
-    const wchar_t* Refusal(HWND h) override
+    const wchar_t* Refusal(HWND h, bool resize) override
     {
         wchar_t cls[256] = {};
         GetClassNameW(h, cls, _countof(cls));
@@ -403,6 +574,9 @@ public:
         if (IsCloaked(h))                                       return L"it is cloaked";
         if (!IsZoomed(h) && CoversItsDisplay(h))                return L"it is full screen";
         if (IsHungAppWindow(h))                                 return L"it is not responding";
+
+        // A window without a sizing border - a dialog, say - was laid out for one size.
+        if (resize && !(GetWindowLongPtrW(h, GWL_STYLE) & WS_THICKFRAME)) return L"its size is fixed";
 
         // Windows would refuse to move it (UIPI) - but only after its click had been
         // taken, so it is left alone from the start.
@@ -448,6 +622,14 @@ public:
         return s;
     }
 
+    RECT WorkArea(HWND h) override
+    {
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        if (!GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi)) return Rect(h);
+        return mi.rcWork;
+    }
+
     void Begin(HWND h) override
     {
         mover_ = std::make_unique<Mover>(h);
@@ -464,23 +646,28 @@ public:
         if (mover_) mover_->Move(topLeft);
     }
 
-    void End(HWND h, const RECT& from, POINT to, bool restored) override
+    void Resize(HWND, const RECT& to, UINT edges) override
     {
-        mover_.reset();   // finishes it: the mover's thread applies what is waiting
-        wchar_t where[64];
-        swprintf_s(where, L"(%ld,%ld)", to.x, to.y);
-        Post(L"Dragged " + Describe(h) + L" from " + RectStr(from) + L" to " + where +
-             (restored ? L", un-maximizing it." : L"."));
+        if (mover_) mover_->Resize(to, edges);
     }
 
-    void Refused(HWND h, const wchar_t* why) override
+    void End(HWND h, const RECT& from, const RECT& to, bool resized, bool restored) override
     {
-        Post(L"Not dragging " + Describe(h) + L": " + why + L".");
+        // As far as is known yet, a resize stopped at the program's own minimum size.
+        const RECT went = resized && mover_ ? mover_->Fitted(to) : to;
+        mover_.reset();   // finishes it: the mover's thread applies what is waiting
+        Post(std::wstring(resized ? L"Resized " : L"Moved ") + Describe(h) + L" from " + RectStr(from) +
+             L" to " + RectStr(went) + (restored ? L", un-maximizing it." : L"."));
+    }
+
+    void Refused(HWND h, const wchar_t* why, bool resize) override
+    {
+        Post(std::wstring(resize ? L"Not resizing " : L"Not moving ") + Describe(h) + L": " + why + L".");
     }
 
     // To the calling thread's own queue, so the input goes in after the hook returns.
-    void MaskModifier() override { PostThreadMessageW(GetCurrentThreadId(), kMsgMask, 0, 0); }
-    void ReplayClick() override  { PostThreadMessageW(GetCurrentThreadId(), kMsgReplay, 0, 0); }
+    void MaskModifier() override         { PostThreadMessageW(GetCurrentThreadId(), kMsgMask, 0, 0); }
+    void ReplayClick(bool right) override { PostThreadMessageW(GetCurrentThreadId(), kMsgReplay, right, 0); }
 
 private:
     void Post(std::wstring line);
@@ -540,19 +727,20 @@ void SendMask()
     SendInput(2, in, sizeof(INPUT));
 }
 
-void SendReplay()
+void SendReplay(bool right)
 {
     // The hook sees logical buttons, SendInput takes physical ones: with the buttons
-    // swapped, the primary button is the right-hand one.
-    const bool swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+    // swapped, the primary button is the right-hand one, and the secondary the left.
+    const bool swapped  = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+    const bool physical = right != swapped;   // true: the right-hand button
     INPUT in[2] = {};
     for (INPUT& i : in)
     {
         i.type           = INPUT_MOUSE;
         i.mi.dwExtraInfo = kOurInput;
     }
-    in[0].mi.dwFlags = swapped ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
-    in[1].mi.dwFlags = swapped ? MOUSEEVENTF_RIGHTUP   : MOUSEEVENTF_LEFTUP;
+    in[0].mi.dwFlags = physical ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+    in[1].mi.dwFlags = physical ? MOUSEEVENTF_RIGHTUP   : MOUSEEVENTF_LEFTUP;
     SendInput(2, in, sizeof(INPUT));
 }
 
@@ -565,9 +753,10 @@ LRESULT CALLBACK HookProc(int code, WPARAM wp, LPARAM lp)
         const auto* m = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
         if (!FromPenOrTouch(m->dwExtraInfo))
         {
-            const UINT msg  = static_cast<UINT>(wp);
-            const bool ours = (m->flags & LLMHF_INJECTED) != 0 && m->dwExtraInfo == kOurInput;
-            const UINT held = msg == WM_LBUTTONDOWN ? HeldModifiers() : 0;
+            const UINT msg   = static_cast<UINT>(wp);
+            const bool ours  = (m->flags & LLMHF_INJECTED) != 0 && m->dwExtraInfo == kOurInput;
+            const bool press = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN;
+            const UINT held  = press ? HeldModifiers() : 0;
             if (t_tracker->OnMouse(msg, m->pt, held, ours)) return 1;
         }
     }
@@ -594,8 +783,9 @@ DWORD WINAPI WatchThread(void* p)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
     const std::unique_ptr<DragEnv> env = MakeWindowsDragEnv(opts.skip, opts.notify);
-    const SIZE threshold = { GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG) };
-    DragTracker tracker(*env, opts.mods, threshold);
+    const SIZE threshold = { GetSystemMetrics(SM_CXDRAG),     GetSystemMetrics(SM_CYDRAG) };
+    const SIZE minSize   = { GetSystemMetrics(SM_CXMINTRACK), GetSystemMetrics(SM_CYMINTRACK) };
+    DragTracker tracker(*env, opts.moveMods, opts.resizeMods, threshold, minSize);
     t_tracker = &tracker;
 
     const HHOOK hook = SetWindowsHookExW(WH_MOUSE_LL, HookProc, GetModuleHandleW(nullptr), 0);
@@ -611,7 +801,7 @@ DWORD WINAPI WatchThread(void* p)
     while (GetMessageW(&msg, nullptr, 0, 0) > 0)
     {
         if (msg.hwnd == nullptr && msg.message == kMsgMask)   { SendMask();   continue; }
-        if (msg.hwnd == nullptr && msg.message == kMsgReplay) { SendReplay(); continue; }
+        if (msg.hwnd == nullptr && msg.message == kMsgReplay) { SendReplay(msg.wParam != 0); continue; }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -642,7 +832,7 @@ bool DragStart(const DragOptions& opts, DWORD& error)
 {
     DragStop();
     error = 0;
-    if (opts.mods == 0) return true;
+    if (opts.moveMods == 0 && opts.resizeMods == 0) return true;
 
     StartInfo start;
     start.opts  = opts;

@@ -13,8 +13,9 @@ The two directions are inverses, so one of each puts everything back — to the 
 displays share a resolution, and to within a pixel or two of rounding when they don't. With two
 displays both do the same swap; with *N* displays, *N* presses the same way also completes the cycle.
 
-It also moves single windows the way many Linux desktops do: hold **Alt** and drag anywhere in a
-window with the left mouse button, and the window follows — no need to find its title bar.
+It also moves and resizes single windows the way many Linux desktops do: hold **Alt** and drag
+anywhere in a window — with the left mouse button to move it, with the right to resize it. No need to
+find its title bar or its border.
 
 ## Build
 
@@ -106,14 +107,22 @@ Hold Alt and press the left mouse button anywhere in a window — not just on it
 drag: the window comes to the front and follows the pointer until you let go. A maximized window
 first returns to its normal size, under the pointer, as it does when you drag its title bar.
 
-An Alt+click that doesn't move still reaches the program, as a click delivered when the button comes
-up. Only Alt on its own counts: with Shift or Ctrl held as well, the drag belongs to the program, so
-Alt+Shift+drag still selects a column in an editor that has one. The desktop, the taskbar, full-screen
-games and videos, windows that have stopped responding and windows of programs running as
-administrator are left alone, and their Alt+clicks go through untouched.
+Press the right button instead to resize the window: the corner or side nearest the pointer follows
+it, and the opposite ones stay put. Think of the window as cut into thirds each way: press in a
+corner third and that corner moves; in the middle third of a side, just that side; in the very
+middle, the nearest corner. The window stops at its smallest size, as when you drag its border. A
+maximized window first becomes an ordinary one filling the screen, and is resized from there.
+Windows without a sizing border — most dialogs — keep their size.
 
-The keys can be changed, or dragging turned off, in the settings — and programs with an Alt+drag of
-their own can be left out.
+An Alt+click or Alt+right-click that doesn't move still reaches the program, delivered when the
+button comes up, so the right-click menu still opens. Only Alt on its own counts: with Shift or Ctrl
+held as well, the drag belongs to the program, so Alt+Shift+drag still selects a column in an editor
+that has one. The desktop, the taskbar, full-screen games and videos, windows that have stopped
+responding and windows of programs running as administrator are left alone, and their Alt+clicks go
+through untouched.
+
+The keys for moving and resizing can each be changed or turned off in the settings — and programs
+with an Alt+drag of their own can be left out.
 
 ### Settings
 
@@ -130,8 +139,9 @@ RotateRight = Ctrl+Alt+Shift+S
 slack.exe
 
 [Drag]
-Move = Alt
-Skip = notepad++.exe
+Move   = Alt
+Resize = Alt
+Skip   = notepad++.exe
 ```
 
 - **Hotkeys** are modifiers and a key joined with `+`. Modifiers are `Ctrl`, `Alt`, `Shift` and
@@ -142,13 +152,15 @@ Skip = notepad++.exe
 - **Ignore** lists programs whose windows stay put when the others rotate, one per line, named as in
   the *Details* tab of Task Manager; `.exe` may be left off. Everything else rotates around them.
   `--list` shows each ignored window and the line that caught it. Dragging still moves them.
-- **Drag** has two settings. `Move` is the keys held while dragging: modifiers joined with `+`, as
-  for a hotkey but with no key, again including at least one of `Ctrl`, `Alt` or `Win` — a
-  Shift+drag already selects text. Exactly those keys must be held, no more. `none` turns dragging
-  off. `Skip` names a program whose windows dragging leaves alone, so that its own drag with the same
-  keys keeps working — column selection in Notepad++ or Visual Studio, say. Give one `Skip` line per
-  program, or several programs on one line separated by commas, named as under `[Ignore]`. A file
-  written by a version before dragging has no `[Drag]` section, and then dragging is on with Alt.
+- **Drag** has three settings. `Move` is the keys held while dragging with the left button to move
+  a window, and `Resize` the keys held while dragging with the right to resize one: modifiers joined
+  with `+`, as for a hotkey but with no key, again including at least one of `Ctrl`, `Alt` or
+  `Win` — programs already use Shift with the mouse. Exactly those keys must be held, no more. `none`
+  turns either one off. `Skip` names a program whose windows dragging leaves alone, so that its own
+  drag with the same keys keeps working — column selection in Notepad++ or Visual Studio, or sizing
+  the brush in Photoshop, say. Give one `Skip` line per program, or several programs on one line
+  separated by commas, named as under `[Ignore]`. A setting left out keeps its default, so a file
+  written before dragging existed, with no `[Drag]` section, gets Alt for both.
 
 A mistake affects only its own line: a bad hotkey or drag setting keeps its default, and anything
 unusable is reported with its line number in the log and in a notification, while the rest of the
@@ -171,8 +183,8 @@ are the only modes it applies to; combined with anything else, or given alone, i
 than being silently ignored. `--swap` is accepted as a synonym for `--rotate`, since that was its
 name before 1.01.
 
-`--selftest` opens test windows, which takes the focus for a few seconds: one that it drags and
-maximizes on the main display, then — given a second display — more that it moves between your
+`--selftest` opens test windows, which takes the focus for a few seconds: one that it drags, resizes
+and maximizes on the main display, then — given a second display — more that it moves between your
 displays. The drag test feeds the window made-up mouse events, so the real pointer never moves.
 `--selftest --no-windows` skips just those tests: the rotation arithmetic, the icons, *Start with
 Windows* (exercised in a scratch registry key), the drag logic on made-up mouse events and the remap
@@ -271,19 +283,28 @@ self-test checks this with a maximized window whose dialog is open, under a norm
 covered both.
 
 **Dragging.** A low-level mouse hook, on a thread of its own, sees each mouse event before any
-program does. When the left button goes down with exactly the drag keys held, over a window that may
-be dragged, the hook keeps the press from the program. If the pointer then moves further than
-Windows' own drag threshold (`SM_CXDRAG` and `SM_CYDRAG`, a few pixels), it is a drag: the window
-comes to the front and follows the pointer, measured from where the button went down. If not, then
-when the button comes up the press and release are sent again with `SendInput`, marked so that the
-hook lets them through, and the program gets its click after all. Mouse moves are never held back,
-so the pointer itself never stutters.
+program does. When the left button goes down with exactly the `Move` keys held, or the right with
+exactly the `Resize` keys, over a window that may be dragged, the hook keeps the press from the
+program. If the pointer then moves further than Windows' own drag threshold (`SM_CXDRAG` and
+`SM_CYDRAG`, a few pixels), it is a drag: the window comes to the front and follows the pointer — or,
+for a resize, the corner or side grabbed does — measured from where the button went down. If not,
+then when the button comes up the press and release are sent again with `SendInput`, marked so that
+the hook lets them through, and the program gets its click after all. Mouse moves are never held
+back, so the pointer itself never stutters. A press of the other button in the middle of a drag is
+kept from the program too, release and all.
 
 Every mouse event on the machine waits for the hook, and Windows quietly removes a hook that is slow
-to answer, so the hook never waits on anything. Each drag gets a thread that moves the window and
-applies only the newest position each time it is ready for another, so a slow or hung program holds
-up its own window and nothing else. Finding the window under the pointer (`WindowFromPoint`) and
-reading its title for the log (`InternalGetWindowText`) send it no messages.
+to answer, so the hook never waits on anything. Each drag gets a thread that moves or resizes the
+window and applies only the newest position each time it is ready for another, so a slow or hung
+program holds up its own window and nothing else. Finding the window under the pointer
+(`WindowFromPoint`) and reading its title for the log (`InternalGetWindowText`) send it no messages.
+
+A resize sets the new size with one `SetWindowPos`, never smaller than Windows' own minimum
+(`SM_CXMINTRACK` and `SM_CYMINTRACK`) unless the window started out smaller. A program may insist on
+a larger minimum of its own, and Windows then keeps the window that size — growing it from its
+top-left corner, which would push it right or down when its left or top side is the one being
+dragged. So the thread checks where the window ended up and puts its far side back; from then on in
+that drag it asks for no less than the program allowed, so the window doesn't flicker back and forth.
 
 Alt and Win each do something on their own when let go: Alt opens the window's menu bar, Win opens
 Start — unless a key or click came in between. The program never saw the click, so while the key is
@@ -293,8 +314,8 @@ opens nothing.
 A window is not dragged when it is the desktop or the taskbar, not showing, an unowned tool window,
 cloaked, full screen (covering its display without being maximized: games, videos, presentations),
 not responding, or run as administrator — Windows would refuse to move it, and by then its click
-would be gone. Nor is one whose program is on the `Skip` list. The press goes through untouched, and
-the log says why.
+would be gone. Nor is one whose program is on the `Skip` list, and a window without a sizing border
+(`WS_THICKFRAME`) is not resized. The press goes through untouched, and the log says why.
 
 ## Known limitations
 
@@ -302,14 +323,21 @@ the log says why.
   by a process running as administrator; Windows blocks it (UIPI). Those windows are skipped and
   counted, and a tray balloon reports how many. Dragging leaves them alone too. Running WinSwapper
   itself as administrator would fix it, at the cost of a UAC prompt every launch.
-- **Alt+drag is WinSwapper's.** While dragging is on, a program with an Alt+drag of its own —
-  column selection in Notepad++, Visual Studio or Word, duplicating in some graphics programs,
-  orbiting in some 3D programs — no longer gets it. Add the program to `Skip`, or choose other drag
-  keys. Alt+Shift+drag and the like still reach programs.
-- **An Alt+click arrives late.** It reaches the program only when the button comes up, as a quick
-  press and release where the button came up, so an Alt+press-and-hold does nothing in the program.
-- **No snapping.** Dragging moves the window and nothing more: no Snap layouts or snapping to the
-  screen edges, which Windows keeps for dragging by the title bar.
+- **Alt+drag is WinSwapper's.** While dragging is on, a program with an Alt+drag or Alt+right-drag
+  of its own — column selection in Notepad++, Visual Studio or Word, duplicating in some graphics
+  programs, sizing the brush in Photoshop, orbiting or zooming in some 3D programs — no longer gets
+  it. Add the program to `Skip`, or choose other drag keys. Alt+Shift+drag and the like still reach
+  programs.
+- **An Alt+click arrives late.** An Alt+click or Alt+right-click reaches the program only when the
+  button comes up, as a quick press and release where the button came up, so an Alt+press-and-hold
+  does nothing in the program.
+- **No snapping.** Dragging moves or resizes the window and nothing more: no Snap layouts or snapping
+  to the screen edges, which Windows keeps for dragging by the title bar and border.
+- **Resizing skips a program's size steps.** A program can adjust a size while you drag its border
+  — a terminal to whole character cells, a video player to its picture's shape — but Windows asks it
+  only while that border is being dragged. A resize with Alt+right-drag sets each size directly, so
+  such a program gets the size asked for and fits itself in as best it can. Minimum sizes are still
+  respected.
 - **Windows owned by a hidden window are skipped.** A few applications, mostly older ones, make
   their main window *owned* by a hidden one. With nothing visible to travel with, those windows are
   left alone.
@@ -340,7 +368,7 @@ the log says why.
 ```
 src/main.cpp      WinMain, hidden window, tray icon, hotkey, menu, message loop
 src/swapper.cpp   display and window enumeration, remap arithmetic, applying moves
-src/drag.cpp      dragging: the mouse hook, which presses to take, moving the window
+src/drag.cpp      dragging: the mouse hook, which presses to take, moving and resizing the window
 src/log.cpp       log files plus console output for the command-line modes
 src/settings.cpp  settings.ini: hotkey and drag-key syntax, program lists, reading and writing the file
 src/tray.cpp      which icon to show, and the Start with Windows setting
