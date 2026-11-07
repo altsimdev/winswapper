@@ -6,42 +6,65 @@
 namespace
 {
 
+// Every setting, commented out: prose after "; ", and a setting - its default first,
+// then any examples - straight after the ";", so deleting that one character puts it
+// to use. The self-test holds the file to that: each such line must work uncommented,
+// and the first one for each setting must be its real default.
 const wchar_t kDefaultText[] =
-    L"; WinSwapper settings. Save this file, then choose \"Reload settings\" from the\r\n"
-    L"; tray menu (or restart WinSwapper) to apply it.\r\n"
+    L"; WinSwapper settings\r\n"
+    L";\r\n"
+    L"; Each setting below is shown at its default, and some with examples, commented out\r\n"
+    L"; by the ; at the start of the line. To use one, delete its ; and change the value\r\n"
+    L"; as you like; whatever stays commented out keeps its default. Then save this file\r\n"
+    L"; and choose \"Reload settings\" from WinSwapper's tray menu.\r\n"
     L"\r\n"
     L"[Hotkeys]\r\n"
-    L"; Modifiers and a key joined with +, such as Ctrl+Alt+S. At least one of Ctrl,\r\n"
-    L"; Alt or Win is required, so a hotkey can never swallow ordinary typing.\r\n"
+    L"; Rotate every window one display to the left, or to the right. A hotkey is\r\n"
+    L"; modifiers and one key joined with +, with at least one of Ctrl, Alt or Win, so it\r\n"
+    L"; can never swallow ordinary typing. \"none\" turns a hotkey off.\r\n"
     L";   Modifiers: Ctrl, Alt, Shift, Win\r\n"
     L";   Keys:      A-Z, 0-9, F1-F24, Left, Right, Up, Down, Home, End, PageUp,\r\n"
     L";              PageDown, Insert, Delete, Space, Tab, Enter, Esc\r\n"
-    L"; Write \"none\" to turn a hotkey off.\r\n"
-    L"RotateLeft  = Ctrl+Alt+S\r\n"
-    L"RotateRight = Ctrl+Alt+Shift+S\r\n"
+    L";RotateLeft  = Ctrl+Alt+S\r\n"
+    L";RotateRight = Ctrl+Alt+Shift+S\r\n"
+    L"; For example, Ctrl+Alt+F11 to rotate left, and no hotkey to rotate right:\r\n"
+    L";RotateLeft  = Ctrl+Alt+F11\r\n"
+    L";RotateRight = none\r\n"
     L"\r\n"
     L"[Ignore]\r\n"
-    L"; Programs whose windows stay put when the others rotate, one per line, named as\r\n"
-    L"; in the Details tab of Task Manager. \".exe\" may be left off. For example:\r\n"
-    L"; slack.exe\r\n"
+    L"; Programs whose windows stay where they are while the others rotate, one per line,\r\n"
+    L"; named as in the Details tab of Task Manager; \".exe\" may be left off. None by\r\n"
+    L"; default. For example:\r\n"
+    L";slack.exe\r\n"
+    L";Spotify\r\n"
     L"\r\n"
     L"[Drag]\r\n"
-    L"; Hold these keys and drag anywhere in a window: with the left mouse button to move\r\n"
-    L"; it, with the right to resize it from the corner or edge nearest the pointer. Or\r\n"
-    L"; click the middle button (the wheel) to lower it: send it behind every other\r\n"
-    L"; window. Ctrl, Alt, Shift and Win joined with +, such as Ctrl+Alt, including at\r\n"
-    L"; least one of Ctrl, Alt or Win. Write \"none\" to turn any of them off.\r\n"
-    L"Move   = Alt\r\n"
-    L"Resize = Alt\r\n"
-    L"Lower  = Alt\r\n"
-    L"; How near, in pixels at 100% scaling, a dragged window's edge has to come to the\r\n"
-    L"; edge of a display - or of the taskbar - to snap flush against it. 0 turns it off.\r\n"
-    L"Snap   = 10\r\n"
-    L"; A left or right click without a drag still reaches the program, but a middle-click\r\n"
-    L"; does not, nor does a drag of the program's own with the same keys - column\r\n"
-    L"; selection in Notepad++ or Visual Studio, or sizing the brush in Photoshop, say.\r\n"
-    L"; Leave such programs alone with a Skip line each, named as under [Ignore]:\r\n"
-    L"; Skip = notepad++.exe\r\n";
+    L"; The keys to hold while using the mouse anywhere in a window: drag with the left\r\n"
+    L"; button to move the window, with the right to resize it from the nearest corner or\r\n"
+    L"; side, or click the middle button (the wheel) to send it behind all the others.\r\n"
+    L"; Ctrl, Alt, Shift and Win joined with +, with at least one of Ctrl, Alt or Win.\r\n"
+    L"; \"none\" turns that one off.\r\n"
+    L";Move   = Alt\r\n"
+    L";Resize = Alt\r\n"
+    L";Lower  = Alt\r\n"
+    L"; For example, Ctrl+Alt to move and resize, which leaves Alt+drag to programs, and\r\n"
+    L"; no sending to the back:\r\n"
+    L";Move   = Ctrl+Alt\r\n"
+    L";Resize = Ctrl+Alt\r\n"
+    L";Lower  = none\r\n"
+    L"\r\n"
+    L"; How near, in pixels at 100% display scaling, a dragged window's edge has to come\r\n"
+    L"; to the edge of a display, or of the taskbar, to snap flush against it: 0 to 100.\r\n"
+    L";Snap   = 10\r\n"
+    L"; For example, to turn snapping off:\r\n"
+    L";Snap   = 0\r\n"
+    L"\r\n"
+    L"; Programs the mouse leaves alone, so that their own Alt+drag or Alt+middle-click\r\n"
+    L"; keeps working - column selection in Notepad++ or Visual Studio, or sizing the\r\n"
+    L"; brush in Photoshop, say. One per line, or several separated by commas, named as\r\n"
+    L"; under [Ignore]. None by default. For example:\r\n"
+    L";Skip = notepad++.exe\r\n"
+    L";Skip = devenv.exe, Photoshop.exe\r\n";
 
 struct NamedKey
 {
@@ -496,15 +519,64 @@ Settings LoadSettings(const std::wstring& path, std::vector<std::wstring>& probl
     return ParseSettings(DecodeSettingsBytes(bytes), problems);
 }
 
-bool WriteDefaultSettings(const std::wstring& path)
+const wchar_t* DefaultSettingsText()
+{
+    return kDefaultText;
+}
+
+SettingsFile EnsureSettingsFile(const std::wstring& path)
 {
     const size_t slash = path.find_last_of(L'\\');
     if (slash != std::wstring::npos) CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
 
-    // CREATE_NEW: never overwrite a file the user may have edited.
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_EXISTS;
+    // Shared with no one while it is looked at and written, so nothing can save into it
+    // in between.
+    const HANDLE f = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+    {
+        // There, but open elsewhere or read-only: what is in it stays, and it can still be
+        // opened to edit.
+        const DWORD err = GetLastError();
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return SettingsFile::Kept;
+        SetLastError(err);
+        return SettingsFile::Failed;
+    }
+    const bool created = GetLastError() != ERROR_ALREADY_EXISTS;
+
+    const auto fail = [f]() {
+        const DWORD err = GetLastError();
+        CloseHandle(f);
+        SetLastError(err);
+        return SettingsFile::Failed;
+    };
+
+    if (!created)
+    {
+        // Blank: nothing but spaces, tabs, line breaks, a byte-order mark, or the zeros a
+        // crash can leave behind. A file too large to be a settings file is not blank,
+        // and neither is one that cannot be read whole.
+        LARGE_INTEGER size  = {};
+        bool          blank = GetFileSizeEx(f, &size) && size.QuadPart < 64 * 1024;
+        if (blank && size.QuadPart > 0)
+        {
+            std::vector<unsigned char> bytes(static_cast<size_t>(size.QuadPart));
+            DWORD got = 0;
+            blank = ReadFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr) &&
+                    got == bytes.size() &&
+                    DecodeSettingsBytes(bytes).find_first_not_of(std::wstring(L" \t\r\n\xFEFF\0", 6)) ==
+                        std::wstring::npos;
+        }
+        if (!blank)
+        {
+            CloseHandle(f);
+            return SettingsFile::Kept;
+        }
+
+        // From the start, with the blanks cut off.
+        const LARGE_INTEGER zero = {};
+        if (!SetFilePointerEx(f, zero, nullptr, FILE_BEGIN) || !SetEndOfFile(f)) return fail();
+    }
 
     const int need = WideCharToMultiByte(CP_UTF8, 0, kDefaultText, -1, nullptr, 0, nullptr, nullptr);
     std::vector<char> utf8(static_cast<size_t>(need));
@@ -513,8 +585,9 @@ bool WriteDefaultSettings(const std::wstring& path)
     // BOM first, so Notepad and other editors open it as UTF-8.
     const unsigned char bom[] = { 0xEF, 0xBB, 0xBF };
     DWORD written = 0;
-    const bool ok = WriteFile(f, bom, sizeof(bom), &written, nullptr) &&
-                    WriteFile(f, utf8.data(), static_cast<DWORD>(need - 1), &written, nullptr);
+    if (!WriteFile(f, bom, sizeof(bom), &written, nullptr) ||
+        !WriteFile(f, utf8.data(), static_cast<DWORD>(need - 1), &written, nullptr))
+        return fail();
     CloseHandle(f);
-    return ok;
+    return created ? SettingsFile::Created : SettingsFile::Filled;
 }

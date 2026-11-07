@@ -7,6 +7,7 @@
 #include "swapper.h"
 #include "tray.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <memory>
@@ -89,6 +90,43 @@ static bool SameRects(const std::vector<RECT>& a, const std::vector<RECT>& b)
 static bool IsRect(const RECT& r, LONG left, LONG top, LONG right, LONG bottom)
 {
     return r.left == left && r.top == top && r.right == right && r.bottom == bottom;
+}
+
+static bool SameSettings(const Settings& a, const Settings& b)
+{
+    return a.rotateLeft == b.rotateLeft && a.rotateRight == b.rotateRight && a.ignore == b.ignore &&
+           a.moveMods == b.moveMods && a.resizeMods == b.resizeMods && a.lowerMods == b.lowerMods &&
+           a.snap == b.snap && a.dragSkip == b.dragSkip;
+}
+
+// Replaces a file's contents with exactly these bytes.
+static bool PutFile(const std::wstring& path, const std::vector<unsigned char>& bytes)
+{
+    const HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD      n  = 0;
+    const bool ok = bytes.empty() || WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &n, nullptr);
+    CloseHandle(f);
+    return ok;
+}
+
+// A file's bytes; none if it cannot be read.
+static std::vector<unsigned char> GetFile(const std::wstring& path)
+{
+    std::vector<unsigned char> bytes;
+    const HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return bytes;
+    LARGE_INTEGER size = {};
+    if (GetFileSizeEx(f, &size) && size.QuadPart > 0 && size.QuadPart < 1024 * 1024)
+    {
+        bytes.resize(static_cast<size_t>(size.QuadPart));
+        DWORD got = 0;
+        if (!ReadFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr)) got = 0;
+        bytes.resize(got);
+    }
+    CloseHandle(f);
+    return bytes;
 }
 
 // Stands in for Windows in the drag tests: one window wherever the pointer is, and a
@@ -562,34 +600,108 @@ int SelfTest(bool windows)
         check(fallback.size() == 2 && fallback[0] == L'a',
               L"bytes that are not UTF-8 are read in the ANSI code page rather than refused");
 
+        // The settings file explains itself. Every line of it is commented out, so on its
+        // own it means just the defaults; each setting commented out in it works once
+        // uncommented; and the first one shown for each setting is its real default.
+        const std::wstring defaultText = DefaultSettingsText();
+        {
+            const auto trim = [](const std::wstring& s) {
+                const size_t b = s.find_first_not_of(L" \t");
+                const size_t e = s.find_last_not_of(L" \t");
+                return b == std::wstring::npos ? std::wstring() : s.substr(b, e - b + 1);
+            };
+            std::wstring              section;
+            std::wstring              firsts;   // the file, with the first line for each setting uncommented
+            std::vector<std::wstring> keys;
+            int                       uncommented = 0;
+            bool                      allWork     = true;
+            for (size_t pos = 0; pos < defaultText.size();)
+            {
+                size_t eol = defaultText.find(L'\n', pos);
+                if (eol == std::wstring::npos) eol = defaultText.size();
+                std::wstring line = defaultText.substr(pos, eol - pos);
+                pos = eol + 1;
+                if (!line.empty() && line.back() == L'\r') line.pop_back();
+
+                if (!line.empty() && line[0] == L'[')
+                {
+                    section = line;
+                    firsts += line + L"\r\n";
+                    continue;
+                }
+                if (line.size() < 2 || line[0] != L';' || line[1] == L' ') continue;   // prose, or blank
+
+                const std::wstring        setting = line.substr(1);
+                std::vector<std::wstring> alone;
+                ParseSettings(section + L"\r\n" + setting + L"\r\n", alone);
+                ++uncommented;
+                if (!alone.empty())
+                {
+                    allWork = false;
+                    LogF(L"    does not work uncommented, under %s: %s", section.c_str(), setting.c_str());
+                }
+
+                const size_t eq = setting.find(L'=');
+                if (eq == std::wstring::npos) continue;   // a program under [Ignore]
+                const std::wstring key = trim(setting.substr(0, eq));
+                if (key == L"Skip" || std::find(keys.begin(), keys.end(), key) != keys.end()) continue;
+                keys.push_back(key);
+                firsts += setting + L"\r\n";
+            }
+
+            std::vector<std::wstring> asIsProblems, firstProblems;
+            const Settings            asIs  = ParseSettings(defaultText, asIsProblems);
+            const Settings            shown = ParseSettings(firsts, firstProblems);
+            check(asIsProblems.empty() && SameSettings(asIs, d),
+                  L"the settings file it writes has every setting commented out, so it means just the defaults");
+            wchar_t msg[160];
+            swprintf_s(msg, L"each of the %d settings commented out in it works once uncommented", uncommented);
+            check(allWork && uncommented >= 10, msg);
+            check(keys.size() == 6 && firstProblems.empty() && SameSettings(shown, d),
+                  L"each of its six settings is shown first at its real default");
+        }
+
         wchar_t tmp[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, tmp);
         const std::wstring path = std::wstring(tmp) + L"winswapper-selftest-settings.ini";
         DeleteFileW(path.c_str());
+        const auto holds = [&path]() { return DecodeSettingsBytes(GetFile(path)); };   // byte-order mark dropped
 
-        std::vector<std::wstring> written;
-        const bool     wrote  = WriteDefaultSettings(path);
-        const Settings loaded = LoadSettings(path, written);
-        check(wrote && written.empty() && loaded.rotateLeft == d.rotateLeft &&
-              loaded.rotateRight == d.rotateRight && loaded.ignore.empty() &&
-              loaded.moveMods == d.moveMods && loaded.resizeMods == d.resizeMods &&
-                  loaded.lowerMods == d.lowerMods && loaded.snap == d.snap && loaded.dragSkip.empty(),
-              L"the default file it writes reads back as exactly the defaults, with no problems");
+        std::vector<std::wstring>        written;
+        const SettingsFile               made   = EnsureSettingsFile(path);
+        const std::vector<unsigned char> raw    = GetFile(path);
+        const Settings                   loaded = LoadSettings(path, written);
+        check(made == SettingsFile::Created && raw.size() > 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF &&
+                  holds() == defaultText && written.empty() && SameSettings(loaded, d),
+              L"a missing settings file is written, as UTF-8, explaining every setting, and reads back as the defaults");
 
-        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (f != INVALID_HANDLE_VALUE)
+        const std::vector<std::vector<unsigned char>> blanks = {
+            {}, { 0xEF, 0xBB, 0xBF }, { 0xFF, 0xFE }, { ' ', '\r', '\n', '\t', '\r', '\n' }, { 0, 0, 0, 0 },
+        };
+        bool allFilled = true;
+        for (size_t i = 0; i < blanks.size(); ++i)
         {
-            const char edited[] = "[Ignore]\r\nkeep.exe\r\n";
-            DWORD n = 0;
-            WriteFile(f, edited, sizeof(edited) - 1, &n, nullptr);
-            CloseHandle(f);
+            const bool         put = PutFile(path, blanks[i]);
+            const SettingsFile got = EnsureSettingsFile(path);
+            if (!put || got != SettingsFile::Filled || holds() != defaultText)
+            {
+                allFilled = false;
+                LogF(L"    blank file %zu (%zu bytes) was not filled in", i, blanks[i].size());
+            }
         }
+        check(allFilled, L"so is a blank one: no bytes, only a byte-order mark, only blank lines, or only zeros");
+
+        const std::string edited = "[Ignore]\r\nkeep.exe\r\n";
+        const std::string note   = "; nothing here yet\r\n";
+        PutFile(path, std::vector<unsigned char>(edited.begin(), edited.end()));
         std::vector<std::wstring> keptProblems;
-        const bool     again = WriteDefaultSettings(path);
-        const Settings kept  = LoadSettings(path, keptProblems);
-        check(again && kept.ignore.size() == 1 && kept.ignore[0] == L"keep.exe",
-              L"writing the default file never overwrites one the user has edited");
+        const SettingsFile        again = EnsureSettingsFile(path);
+        const Settings            kept  = LoadSettings(path, keptProblems);
+        PutFile(path, std::vector<unsigned char>(note.begin(), note.end()));
+        const SettingsFile noted = EnsureSettingsFile(path);
+        check(again == SettingsFile::Kept && kept.ignore.size() == 1 && kept.ignore[0] == L"keep.exe" &&
+                  noted == SettingsFile::Kept && holds() == L"; nothing here yet\r\n",
+              L"a settings file with anything in it, even only a comment, is never touched");
 
         DeleteFileW(path.c_str());
         std::vector<std::wstring> missingProblems;

@@ -14,6 +14,11 @@ no section here, so add the entry before pushing the tag.
   others, as on KDE. If it had the keyboard, the window now under the pointer gets it. A window kept
   on top of others stays in front of the rest. It is on by default, with its own `Lower` setting
   under `[Drag]`.
+- **New:** the settings file explains itself. Whenever WinSwapper finds it missing or blank - at
+  start-up, and on *Reload settings* and *Edit settings* - it writes every setting there, described
+  and shown at its default, with examples, all commented out: delete the `;` to use one. Before,
+  only *Edit settings* wrote the file, and an empty one stayed empty. A file with anything in it is
+  never touched.
 - **Fix:** when Windows signed out, shut down or restarted, the tray log just stopped, with nothing
   to tell that from a crash. It now says which it was - or that an installer asked WinSwapper to
   close.

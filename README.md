@@ -138,9 +138,19 @@ can snapping — and programs with an Alt+drag of their own can be left out.
 
 ### Settings
 
-*Edit settings* opens `%LOCALAPPDATA%\WinSwapper\settings.ini` in Notepad, creating it first with the
-defaults and a comment explaining each setting. Until then there is no file and the defaults apply.
-After saving, choose *Reload settings* — no restart needed.
+The settings live in `%LOCALAPPDATA%\WinSwapper\settings.ini`, which *Edit settings* opens in
+Notepad. Whenever WinSwapper finds that file missing or blank — when it starts, and on *Reload
+settings* and *Edit settings* — it writes one that explains every setting, showing each at its
+default, with examples, all commented out: delete the `;` at the start of a line to use it. Whatever
+stays commented out keeps its default. A file with anything else in it, even only a comment, is
+never touched, so nothing you write there is lost. After saving, choose *Reload settings* — no
+restart needed.
+
+A file written by 1.09 or earlier has its settings written out rather than commented out, and only
+the ones that version had. It still works as it is; to get the explanations of the newer settings,
+empty or delete it and choose *Reload settings*.
+
+Uncommented, with some examples, the settings look like this:
 
 ```ini
 [Hotkeys]

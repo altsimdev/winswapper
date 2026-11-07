@@ -297,10 +297,32 @@ static void ReportSettings(const std::vector<std::wstring>& problems, const std:
     }
 }
 
+// A missing or blank settings file is written with every setting explained and shown
+// at its default, all commented out; one with anything in it is never touched. False if
+// it needed writing and could not be.
+static bool EnsureSettings(const std::wstring& path)
+{
+    switch (EnsureSettingsFile(path))
+    {
+    case SettingsFile::Created:
+        LogF(L"Created %s, which explains every setting, all left at their defaults.", path.c_str());
+        return true;
+    case SettingsFile::Filled:
+        LogF(L"%s was empty, so it now explains every setting, all left at their defaults.", path.c_str());
+        return true;
+    case SettingsFile::Failed:
+        LogF(L"Could not write %s, error %lu.", path.c_str(), GetLastError());
+        return false;
+    default:
+        return true;
+    }
+}
+
 static void LoadAndApplySettings(bool reloaded)
 {
     std::vector<std::wstring> problems;
     const std::wstring path = SettingsPath();
+    EnsureSettings(path);   // if it cannot be written, the defaults still apply
     g_settings = LoadSettings(path, problems);
 
     const bool exists = GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
@@ -315,11 +337,10 @@ static void LoadAndApplySettings(bool reloaded)
 
 static void EditSettings()
 {
-    // Created with the defaults and comments on first use; never overwritten.
+    // Normally there since start-up, but it may have been deleted or emptied since.
     const std::wstring path = SettingsPath();
-    if (!WriteDefaultSettings(path))
+    if (!EnsureSettings(path))
     {
-        LogF(L"Could not create %s, error %lu.", path.c_str(), GetLastError());
         Balloon(L"Could not create the settings file. See Open log.", NIIF_WARNING);
         return;
     }

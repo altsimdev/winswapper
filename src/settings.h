@@ -73,6 +73,21 @@ std::wstring SettingsPath();
 // Reads and parses the file. A missing file is not a problem: it means defaults.
 Settings LoadSettings(const std::wstring& path, std::vector<std::wstring>& problems);
 
-// Creates the file with the defaults and comments explaining every setting, unless
-// it already exists - an existing file is never overwritten. False on failure.
-bool WriteDefaultSettings(const std::wstring& path);
+// The text EnsureSettingsFile() writes: what each setting does, shown at its default
+// and with examples, every line of which is commented out - so the file means just
+// the defaults until one is uncommented.
+const wchar_t* DefaultSettingsText();
+
+// What EnsureSettingsFile() did.
+enum class SettingsFile
+{
+    Kept,      // it had something in it already, and was left as it was
+    Created,   // it was missing
+    Filled,    // it was blank: nothing but spaces, line breaks or a byte-order mark
+    Failed,    // it needed writing and could not be; GetLastError() says why
+};
+
+// Makes sure the file is there and explains itself: when it is missing or blank, it
+// gets DefaultSettingsText(). A file with anything else in it - even just comments -
+// is never touched, so nothing written in it is ever lost.
+SettingsFile EnsureSettingsFile(const std::wstring& path);
