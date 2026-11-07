@@ -21,9 +21,19 @@ const wchar_t kDefaultText[] =
     L"RotateRight = Ctrl+Alt+Shift+S\r\n"
     L"\r\n"
     L"[Ignore]\r\n"
-    L"; Programs whose windows are never moved, one per line, named as in the Details\r\n"
-    L"; tab of Task Manager. \".exe\" may be left off. For example:\r\n"
-    L"; slack.exe\r\n";
+    L"; Programs whose windows stay put when the others rotate, one per line, named as\r\n"
+    L"; in the Details tab of Task Manager. \".exe\" may be left off. For example:\r\n"
+    L"; slack.exe\r\n"
+    L"\r\n"
+    L"[Drag]\r\n"
+    L"; Hold this and drag anywhere in a window with the left mouse button to move it:\r\n"
+    L"; Ctrl, Alt, Shift and Win joined with +, such as Ctrl+Alt, including at least one\r\n"
+    L"; of Ctrl, Alt or Win. Write \"none\" to turn dragging off.\r\n"
+    L"Move = Alt\r\n"
+    L"; A click without a drag still reaches the program, but a drag of its own with the\r\n"
+    L"; same keys - column selection in Notepad++ or Visual Studio, say - no longer does.\r\n"
+    L"; Leave such programs alone with a Skip line each, named as under [Ignore]:\r\n"
+    L"; Skip = notepad++.exe\r\n";
 
 struct NamedKey
 {
@@ -75,6 +85,26 @@ UINT KeyFromName(const std::wstring& t)
     return 0;
 }
 
+UINT ModifierFromName(const std::wstring& t)
+{
+    if (Same(t, L"Ctrl")  || Same(t, L"Control")) return MOD_CONTROL;
+    if (Same(t, L"Alt"))                          return MOD_ALT;
+    if (Same(t, L"Shift"))                        return MOD_SHIFT;
+    if (Same(t, L"Win")   || Same(t, L"Windows")) return MOD_WIN;
+    return 0;
+}
+
+// "Ctrl+Alt+" and so on, in that order, each followed by its +.
+std::wstring ModifierPrefix(UINT mods)
+{
+    std::wstring s;
+    if (mods & MOD_CONTROL) s += L"Ctrl+";
+    if (mods & MOD_ALT)     s += L"Alt+";
+    if (mods & MOD_SHIFT)   s += L"Shift+";
+    if (mods & MOD_WIN)     s += L"Win+";
+    return s;
+}
+
 std::wstring NameOfKey(UINT vk)
 {
     if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9'))
@@ -110,6 +140,7 @@ Settings DefaultSettings()
     Settings s;
     s.rotateLeft  = { MOD_CONTROL | MOD_ALT,             'S' };
     s.rotateRight = { MOD_CONTROL | MOD_ALT | MOD_SHIFT, 'S' };
+    s.dragMods    = MOD_ALT;
     return s;
 }
 
@@ -139,27 +170,26 @@ bool ParseHotkey(const std::wstring& text, Hotkey& out, std::wstring& why)
         const std::wstring tok = Trim(t.substr(pos, plus - pos));
         pos = plus + 1;
 
-        if (tok.empty())                                  { why = L"has an empty part between + signs"; return false; }
-        if      (Same(tok, L"Ctrl")  || Same(tok, L"Control")) mods |= MOD_CONTROL;
-        else if (Same(tok, L"Alt"))                            mods |= MOD_ALT;
-        else if (Same(tok, L"Shift"))                          mods |= MOD_SHIFT;
-        else if (Same(tok, L"Win")   || Same(tok, L"Windows")) mods |= MOD_WIN;
-        else
+        if (tok.empty()) { why = L"has an empty part between + signs"; return false; }
+        if (const UINT m = ModifierFromName(tok))
         {
-            const UINT k = KeyFromName(tok);
-            if (!k)
-            {
-                why = L"has '" + tok + L"', which is neither a modifier nor a key it knows";
-                return false;
-            }
-            if (vk)
-            {
-                why = L"names two keys, " + keyName + L" and " + tok + L"; a hotkey has one";
-                return false;
-            }
-            vk      = k;
-            keyName = tok;
+            mods |= m;
+            continue;
         }
+
+        const UINT k = KeyFromName(tok);
+        if (!k)
+        {
+            why = L"has '" + tok + L"', which is neither a modifier nor a key it knows";
+            return false;
+        }
+        if (vk)
+        {
+            why = L"names two keys, " + keyName + L" and " + tok + L"; a hotkey has one";
+            return false;
+        }
+        vk      = k;
+        keyName = tok;
     }
 
     if (!vk)
@@ -181,19 +211,65 @@ bool ParseHotkey(const std::wstring& text, Hotkey& out, std::wstring& why)
 std::wstring FormatHotkey(const Hotkey& h)
 {
     if (!h.On()) return L"none";
-    std::wstring s;
-    if (h.mods & MOD_CONTROL) s += L"Ctrl+";
-    if (h.mods & MOD_ALT)     s += L"Alt+";
-    if (h.mods & MOD_SHIFT)   s += L"Shift+";
-    if (h.mods & MOD_WIN)     s += L"Win+";
-    return s + NameOfKey(h.vk);
+    return ModifierPrefix(h.mods) + NameOfKey(h.vk);
+}
+
+bool ParseModifiers(const std::wstring& text, UINT& out, std::wstring& why)
+{
+    const std::wstring t = Trim(text);
+    if (Same(t, L"none") || Same(t, L"off"))
+    {
+        out = 0;
+        return true;
+    }
+    if (t.empty())
+    {
+        why = L"is empty (write none to turn it off)";
+        return false;
+    }
+
+    UINT   mods = 0;
+    size_t pos  = 0;
+    while (pos <= t.size())
+    {
+        size_t plus = t.find(L'+', pos);
+        if (plus == std::wstring::npos) plus = t.size();
+        const std::wstring tok = Trim(t.substr(pos, plus - pos));
+        pos = plus + 1;
+
+        if (tok.empty()) { why = L"has an empty part between + signs"; return false; }
+        if (const UINT m = ModifierFromName(tok))
+        {
+            mods |= m;
+            continue;
+        }
+        why = KeyFromName(tok) ? L"names the key " + tok + L", but only Ctrl, Alt, Shift and Win go here"
+                               : L"has '" + tok + L"', which is not Ctrl, Alt, Shift or Win";
+        return false;
+    }
+
+    if (!(mods & (MOD_CONTROL | MOD_ALT | MOD_WIN)))
+    {
+        why = L"needs Ctrl, Alt or Win, since a Shift+drag already selects text";
+        return false;
+    }
+    out = mods;
+    return true;
+}
+
+std::wstring FormatModifiers(UINT mods)
+{
+    if (!mods) return L"none";
+    std::wstring s = ModifierPrefix(mods);
+    s.pop_back();   // the last +
+    return s;
 }
 
 Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& problems)
 {
     Settings s = DefaultSettings();
 
-    enum class Section { None, Hotkeys, Ignore, Unknown };
+    enum class Section { None, Hotkeys, Ignore, Drag, Unknown };
     Section section = Section::None;
 
     size_t pos    = 0;
@@ -219,6 +295,7 @@ Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& prob
             const std::wstring name = Trim(line.substr(1, line.size() - 2));
             if      (Same(name, L"Hotkeys")) section = Section::Hotkeys;
             else if (Same(name, L"Ignore"))  section = Section::Ignore;
+            else if (Same(name, L"Drag"))    section = Section::Drag;
             else
             {
                 problems.push_back(LineNo(lineNo) + L"unknown section [" + name + L"]; its lines are skipped");
@@ -274,6 +351,45 @@ Settings ParseSettings(const std::wstring& text, std::vector<std::wstring>& prob
             }
             s.ignore.push_back(NormalizeProgram(line));
             break;
+
+        case Section::Drag:
+        {
+            const size_t eq = line.find(L'=');
+            if (eq == std::wstring::npos)
+            {
+                problems.push_back(LineNo(lineNo) + L"expected Name = value, such as Move = Alt");
+                break;
+            }
+            const std::wstring key   = Trim(line.substr(0, eq));
+            const std::wstring value = Trim(line.substr(eq + 1));
+
+            if (Same(key, L"Move"))
+            {
+                UINT         mods = 0;
+                std::wstring why;
+                if (ParseModifiers(value, mods, why)) s.dragMods = mods;
+                else
+                    problems.push_back(LineNo(lineNo) + key + L" '" + value + L"' " + why +
+                                       L"; using " + FormatModifiers(s.dragMods));
+            }
+            else if (Same(key, L"Skip"))
+            {
+                // Several on one line, separated by commas, are fine too.
+                size_t at = 0;
+                while (at <= value.size())
+                {
+                    size_t comma = value.find(L',', at);
+                    if (comma == std::wstring::npos) comma = value.size();
+                    const std::wstring program = NormalizeProgram(value.substr(at, comma - at));
+                    at = comma + 1;
+                    if (!program.empty()) s.dragSkip.push_back(program);
+                }
+            }
+            else
+                problems.push_back(LineNo(lineNo) + L"unknown setting '" + key +
+                                   L"' (expected Move or Skip)");
+            break;
+        }
         }
     }
 

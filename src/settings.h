@@ -26,6 +26,14 @@ struct Settings
     // directory, and ".exe" added when there is no extension. Matched without
     // regard to case.
     std::vector<std::wstring> ignore;
+
+    // The modifiers (MOD_* bits) that, held while dragging with the left mouse
+    // button, move the window under the pointer. 0 turns dragging off.
+    UINT dragMods = 0;
+
+    // Programs whose windows dragging leaves alone, so that the same drag still
+    // reaches them; normalised and matched as `ignore` is.
+    std::vector<std::wstring> dragSkip;
 };
 
 Settings DefaultSettings();
@@ -35,6 +43,11 @@ Settings DefaultSettings();
 // typing. On failure, `why` says what is wrong in words fit for the user.
 bool         ParseHotkey(const std::wstring& text, Hotkey& out, std::wstring& why);
 std::wstring FormatHotkey(const Hotkey& h);   // "none" when off
+
+// The same for modifiers alone, such as "Alt" or "Ctrl+Win", as dragging uses them:
+// again at least one of Ctrl, Alt or Win, and "none" gives 0.
+bool         ParseModifiers(const std::wstring& text, UINT& out, std::wstring& why);
+std::wstring FormatModifiers(UINT mods);       // "none" when 0
 
 // Turns the settings file's text into settings. Anything unusable is described in
 // `problems` (with its line number) and that one setting keeps its default; the

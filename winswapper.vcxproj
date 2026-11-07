@@ -111,6 +111,7 @@
 
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\drag.cpp" />
     <ClCompile Include="src\swapper.cpp" />
     <ClCompile Include="src\log.cpp" />
     <ClCompile Include="src\tray.cpp" />
@@ -118,6 +119,7 @@
     <ClCompile Include="src\settings.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\drag.h" />
     <ClInclude Include="src\swapper.h" />
     <ClInclude Include="src\log.h" />
     <ClInclude Include="src\tray.h" />

@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "drag.h"
 #include "log.h"
 #include "resource.h"
 #include "selftest.h"
@@ -30,19 +31,34 @@ static int       g_iconDisplays   = 0;       // how many displays g_icon was cho
 static UINT      g_taskbarCreated = 0;
 static bool      g_leftOk         = false;   // the left hotkey is registered
 static bool      g_rightOk        = false;
+static bool      g_dragOn         = false;   // the mouse is being watched for dragging
 static HANDLE    g_mutex          = nullptr;
 static Settings  g_settings       = DefaultSettings();
 
 // ------------------------------------------------------------------ tray ----
 
+// How dragging stands, for the About box and the reload balloon.
+static std::wstring DragState()
+{
+    if (!g_settings.dragMods) return L"off (in settings)";
+    std::wstring s = FormatModifiers(g_settings.dragMods);
+    if (!g_dragOn) return s + L" (UNAVAILABLE - see the log)";
+    if (!g_settings.dragSkip.empty())
+        s += L", except in " + std::to_wstring(g_settings.dragSkip.size()) + L" program(s)";
+    return s;
+}
+
 // The tooltip carries text from the settings now, so it is truncated to fit rather
 // than formatted with swprintf_s, which would abort the process on overflow.
 static void FillTip(NOTIFYICONDATAW& nid)
 {
-    _snwprintf_s(nid.szTip, _TRUNCATE, L"WinSwapper - %d display%s\nLeft: %s\nRight: %s",
+    const std::wstring drag = !g_settings.dragMods ? std::wstring(L"off")
+                            : g_dragOn             ? FormatModifiers(g_settings.dragMods)
+                                                   : std::wstring(L"unavailable");
+    _snwprintf_s(nid.szTip, _TRUNCATE, L"WinSwapper - %d display%s\nLeft: %s\nRight: %s\nDrag: %s",
                  g_iconDisplays, g_iconDisplays == 1 ? L"" : L"s",
                  FormatHotkey(g_settings.rotateLeft).c_str(),
-                 FormatHotkey(g_settings.rotateRight).c_str());
+                 FormatHotkey(g_settings.rotateRight).c_str(), drag.c_str());
 }
 
 static void UpdateTrayTip()
@@ -179,16 +195,43 @@ static std::wstring RegisterHotkeys()
     return lost;
 }
 
+// Starts or stops watching the mouse, as the settings say. Returns false only when
+// dragging is wanted but could not be set up.
+static bool ApplyDragging()
+{
+    DragOptions opts;
+    opts.mods   = g_settings.dragMods;
+    opts.skip   = g_settings.dragSkip;
+    opts.notify = g_hwnd;
+
+    DWORD err = 0;
+    const bool ok = DragStart(opts, err);
+    g_dragOn = ok && opts.mods != 0;
+
+    const std::wstring keys = FormatModifiers(opts.mods);
+    if (!opts.mods)
+        LogF(L"Dragging windows is turned off in settings.");
+    else if (ok)
+    {
+        const std::wstring except = opts.skip.empty() ? std::wstring()
+            : L", except in " + std::to_wstring(opts.skip.size()) + L" program(s)";
+        LogF(L"%s+drag moves windows%s.", keys.c_str(), except.c_str());
+    }
+    else
+        LogF(L"Could not watch the mouse for %s+drag, error %lu.", keys.c_str(), err);
+    return ok;
+}
+
 // Logs what loading the settings found, and says so in a balloon when something
 // needs the user's attention - or, after an explicit reload, that it worked.
 static void ReportSettings(const std::vector<std::wstring>& problems, const std::wstring& lost,
-                           bool reloaded)
+                           bool dragOk, bool reloaded)
 {
     for (const std::wstring& p : problems)
         LogF(L"settings.ini %s", p.c_str());
 
     wchar_t msg[256];
-    if (!problems.empty() || !lost.empty())
+    if (!problems.empty() || !lost.empty() || !dragOk)
     {
         std::wstring text;
         if (!problems.empty())
@@ -197,13 +240,18 @@ static void ReportSettings(const std::vector<std::wstring>& problems, const std:
         if (!lost.empty())
             text += (text.empty() ? L"" : L"\n") + lost + L" is taken by another app. "
                     L"Use the tray menu, or pick another in Edit settings.";
+        if (!dragOk)
+            text += (text.empty() ? L"" : L"\n") + FormatModifiers(g_settings.dragMods) +
+                    L"+drag could not be set up. See Open log.";
         Balloon(text.c_str(), NIIF_WARNING);
     }
     else if (reloaded)
     {
-        _snwprintf_s(msg, _TRUNCATE, L"Settings reloaded.\nLeft: %s   Right: %s\nIgnoring %zu program(s).",
+        _snwprintf_s(msg, _TRUNCATE,
+                     L"Settings reloaded.\nLeft: %s   Right: %s\nIgnoring %zu program(s).\nDrag: %s",
                      FormatHotkey(g_settings.rotateLeft).c_str(),
-                     FormatHotkey(g_settings.rotateRight).c_str(), g_settings.ignore.size());
+                     FormatHotkey(g_settings.rotateRight).c_str(), g_settings.ignore.size(),
+                     DragState().c_str());
         Balloon(msg, NIIF_INFO);
     }
 }
@@ -218,9 +266,10 @@ static void LoadAndApplySettings(bool reloaded)
     LogF(L"Settings %s %s%s; ignoring %zu program(s).", reloaded ? L"reloaded from" : L"read from",
          path.c_str(), exists ? L"" : L" (not created yet, so the defaults)", g_settings.ignore.size());
 
-    const std::wstring lost = RegisterHotkeys();
+    const std::wstring lost   = RegisterHotkeys();
+    const bool         dragOk = ApplyDragging();
     UpdateTrayTip();
-    ReportSettings(problems, lost, reloaded);
+    ReportSettings(problems, lost, dragOk, reloaded);
 }
 
 static void EditSettings()
@@ -311,15 +360,19 @@ static void ShowAbout()
                L"pixel-exact when the displays share a resolution. With two displays both "
                L"do the same swap; with N displays, N presses the same way also completes "
                L"the cycle.\n\n"
+               L"Holding the drag keys and dragging anywhere in a window with the left "
+               L"mouse button moves that window, as on many Linux desktops.\n\n"
                L"Rotate left:  %s\n"
                L"Rotate right: %s\n"
-               L"Ignoring: %zu program(s)\n\n"
+               L"Ignoring: %zu program(s)\n"
+               L"Drag keys: %s\n\n"
                L"Settings: %s\n"
                L"Log: %s%s\n\n"
                L"Command line: --list, --dry-run, --rotate, --reverse, --selftest, --no-windows",
                HotkeyState(g_settings.rotateLeft,  g_leftOk).c_str(),
                HotkeyState(g_settings.rotateRight, g_rightOk).c_str(),
                g_settings.ignore.size(),
+               DragState().c_str(),
                SettingsPath().c_str(),
                LogFilePath(), logProblem.c_str());
     MessageBoxW(nullptr, msg, L"About WinSwapper", MB_OK | MB_ICONINFORMATION);
@@ -417,7 +470,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == kLogRetryTimer && LogRetry()) KillTimer(hwnd, kLogRetryTimer);
         return 0;
 
+    case kDragLogMessage:
+        for (const std::wstring& line : DragTakeLog())
+            LogF(L"%s", line.c_str());
+        return 0;
+
     case WM_DESTROY:
+        DragStop();
+        for (const std::wstring& line : DragTakeLog())   // a drag that ended just now
+            LogF(L"%s", line.c_str());
         RemoveTrayIcon();
         UnregisterHotkeys();
         PostQuitMessage(0);
@@ -439,10 +500,13 @@ static void PrintUsage()
     LogF(L"  winswapper.exe             run in the notification area");
     LogF(L"                             %s rotates left, %s right",
          FormatHotkey(g_settings.rotateLeft).c_str(), FormatHotkey(g_settings.rotateRight).c_str());
+    if (g_settings.dragMods)
+        LogF(L"                             and %s+drag anywhere in a window moves it",
+             FormatModifiers(g_settings.dragMods).c_str());
     LogF(L"  winswapper.exe --list      show displays and every window, included or not");
     LogF(L"  winswapper.exe --dry-run   compute the rotation and print it, move nothing");
     LogF(L"  winswapper.exe --rotate    perform one rotation and exit (--swap also works)");
-    LogF(L"  winswapper.exe --selftest  verify the remap math and the window-move paths");
+    LogF(L"  winswapper.exe --selftest  verify the remap and drag logic and the window-move paths");
     LogF(L"");
     LogF(L"  --reverse, --right         with --rotate or --dry-run, rotate right instead;");
     LogF(L"                             an error with anything else");

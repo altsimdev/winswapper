@@ -128,7 +128,7 @@ static std::wstring TitleOf(HWND h)
     return buf;
 }
 
-static bool IsCloaked(HWND hwnd)
+bool IsCloaked(HWND hwnd)
 {
     DWORD cloaked = 0;
     if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))))
@@ -136,7 +136,7 @@ static bool IsCloaked(HWND hwnd)
     return false;
 }
 
-static bool IsShellClass(const std::wstring& c)
+bool IsShellClass(const std::wstring& c)
 {
     static const wchar_t* const kBlocked[] = {
         L"Progman",

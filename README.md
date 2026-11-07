@@ -13,6 +13,9 @@ The two directions are inverses, so one of each puts everything back — to the 
 displays share a resolution, and to within a pixel or two of rounding when they don't. With two
 displays both do the same swap; with *N* displays, *N* presses the same way also completes the cycle.
 
+It also moves single windows the way many Linux desktops do: hold **Alt** and drag anywhere in a
+window with the left mouse button, and the window follows — no need to find its title bar.
+
 ## Build
 
 Requires Visual Studio with the "Desktop development with C++" workload. Open `winswapper.sln` and
@@ -85,8 +88,8 @@ Run with no arguments and it goes to the notification area. Right-click the icon
 *Exit*; double-click it to rotate left.
 
 The icon pictures as many displays as are connected — one to four, and four for anything more — and
-redraws itself when you plug a display in or take one away. Hovering over it shows the exact count
-and the hotkeys.
+redraws itself when you plug a display in or take one away. Hovering over it shows the exact count,
+the hotkeys and the drag keys.
 
 *Start with Windows* is off until you turn it on. Ticking it registers this copy of the exe to start
 when you sign in, for your user only and without administrator rights; it then also appears in Task
@@ -96,6 +99,21 @@ puts that right.
 
 The two hotkeys are registered independently, so if another application has claimed one of them the
 other still works — and the tray menu always does.
+
+### Dragging
+
+Hold Alt and press the left mouse button anywhere in a window — not just on its title bar — then
+drag: the window comes to the front and follows the pointer until you let go. A maximized window
+first returns to its normal size, under the pointer, as it does when you drag its title bar.
+
+An Alt+click that doesn't move still reaches the program, as a click delivered when the button comes
+up. Only Alt on its own counts: with Shift or Ctrl held as well, the drag belongs to the program, so
+Alt+Shift+drag still selects a column in an editor that has one. The desktop, the taskbar, full-screen
+games and videos, windows that have stopped responding and windows of programs running as
+administrator are left alone, and their Alt+clicks go through untouched.
+
+The keys can be changed, or dragging turned off, in the settings — and programs with an Alt+drag of
+their own can be left out.
 
 ### Settings
 
@@ -110,6 +128,10 @@ RotateRight = Ctrl+Alt+Shift+S
 
 [Ignore]
 slack.exe
+
+[Drag]
+Move = Alt
+Skip = notepad++.exe
 ```
 
 - **Hotkeys** are modifiers and a key joined with `+`. Modifiers are `Ctrl`, `Alt`, `Shift` and
@@ -117,14 +139,21 @@ slack.exe
   ordinary typing. Keys are `A`–`Z`, `0`–`9`, `F1`–`F24`, `Left`, `Right`, `Up`, `Down`, `Home`,
   `End`, `PageUp`, `PageDown`, `Insert`, `Delete`, `Space`, `Tab`, `Enter` and `Esc`. `none` turns a
   hotkey off.
-- **Ignore** lists programs whose windows are never moved, one per line, named as in the *Details*
-  tab of Task Manager; `.exe` may be left off. Their windows stay put while everything else rotates
-  around them. `--list` shows each ignored window and the line that caught it.
+- **Ignore** lists programs whose windows stay put when the others rotate, one per line, named as in
+  the *Details* tab of Task Manager; `.exe` may be left off. Everything else rotates around them.
+  `--list` shows each ignored window and the line that caught it. Dragging still moves them.
+- **Drag** has two settings. `Move` is the keys held while dragging: modifiers joined with `+`, as
+  for a hotkey but with no key, again including at least one of `Ctrl`, `Alt` or `Win` — a
+  Shift+drag already selects text. Exactly those keys must be held, no more. `none` turns dragging
+  off. `Skip` names a program whose windows dragging leaves alone, so that its own drag with the same
+  keys keeps working — column selection in Notepad++ or Visual Studio, say. Give one `Skip` line per
+  program, or several programs on one line separated by commas, named as under `[Ignore]`. A file
+  written by a version before dragging has no `[Drag]` section, and then dragging is on with Alt.
 
-A mistake affects only its own line: a bad hotkey keeps its default, and anything unusable is
-reported with its line number in the log and in a notification, while the rest of the file still
-applies. The file may be saved as UTF-8 (with or without a byte-order mark) or UTF-16. The
-command-line modes read it too, so `--help` shows the hotkeys actually in use.
+A mistake affects only its own line: a bad hotkey or drag setting keeps its default, and anything
+unusable is reported with its line number in the log and in a notification, while the rest of the
+file still applies. The file may be saved as UTF-8 (with or without a byte-order mark) or UTF-16.
+The command-line modes read it too, so `--help` shows the hotkeys and drag keys actually in use.
 
 There are also four command-line modes, which print to the console they were launched from and to
 their own log file (see below):
@@ -135,22 +164,25 @@ their own log file (see below):
 | `winswapper.exe --list` | Show the displays and **every** top-level window, with the reason each one was included or excluded |
 | `winswapper.exe --dry-run` | Compute the whole rotation and print it — moves nothing |
 | `winswapper.exe --rotate` | Perform one rotation and exit (bind this to anything you like) |
-| `winswapper.exe --selftest` | Verify the rotation mapping, the remap arithmetic and the three window-move paths |
+| `winswapper.exe --selftest` | Verify the rotation mapping, the remap arithmetic, the three window-move paths and dragging |
 
 `--reverse` (or `--right`) added to `--rotate` or `--dry-run` rotates right instead of left. Those
 are the only modes it applies to; combined with anything else, or given alone, it is an error rather
 than being silently ignored. `--swap` is accepted as a synonym for `--rotate`, since that was its
 name before 1.01.
 
-`--selftest` opens test windows and moves them between your displays, which takes the focus for a
-few seconds. `--selftest --no-windows` skips just those tests: the rotation arithmetic, the icons,
-*Start with Windows* (exercised in a scratch registry key) and the remap round trips all still run,
-and nothing on screen is disturbed. Like `--reverse`, `--no-windows` is an error with any other mode.
+`--selftest` opens test windows, which takes the focus for a few seconds: one that it drags and
+maximizes on the main display, then — given a second display — more that it moves between your
+displays. The drag test feeds the window made-up mouse events, so the real pointer never moves.
+`--selftest --no-windows` skips just those tests: the rotation arithmetic, the icons, *Start with
+Windows* (exercised in a scratch registry key), the drag logic on made-up mouse events and the remap
+round trips all still run, and nothing on screen is disturbed. Like `--reverse`, `--no-windows` is
+an error with any other mode.
 
 `--selftest` exits 0 when every check ran and passed, 3 when it passed everything it ran but skipped
 the window-move tests — because of `--no-windows`, or for want of a second display — and 1 on a
-real failure. Usage errors exit 2 in every mode. The rotation arithmetic is checked regardless of
-displays, which is why CI runs it on a single-display runner.
+real failure. Usage errors exit 2 in every mode. The rotation arithmetic and the drag test need no
+second display, which is why CI runs them on a single-display runner.
 
 Logs are in `%LOCALAPPDATA%\WinSwapper\`:
 
@@ -238,12 +270,46 @@ activation took them to the front with it, and putting the owner back takes them
 self-test checks this with a maximized window whose dialog is open, under a normal window that
 covered both.
 
+**Dragging.** A low-level mouse hook, on a thread of its own, sees each mouse event before any
+program does. When the left button goes down with exactly the drag keys held, over a window that may
+be dragged, the hook keeps the press from the program. If the pointer then moves further than
+Windows' own drag threshold (`SM_CXDRAG` and `SM_CYDRAG`, a few pixels), it is a drag: the window
+comes to the front and follows the pointer, measured from where the button went down. If not, then
+when the button comes up the press and release are sent again with `SendInput`, marked so that the
+hook lets them through, and the program gets its click after all. Mouse moves are never held back,
+so the pointer itself never stutters.
+
+Every mouse event on the machine waits for the hook, and Windows quietly removes a hook that is slow
+to answer, so the hook never waits on anything. Each drag gets a thread that moves the window and
+applies only the newest position each time it is ready for another, so a slow or hung program holds
+up its own window and nothing else. Finding the window under the pointer (`WindowFromPoint`) and
+reading its title for the log (`InternalGetWindowText`) send it no messages.
+
+Alt and Win each do something on their own when let go: Alt opens the window's menu bar, Win opens
+Start — unless a key or click came in between. The program never saw the click, so while the key is
+down the hook taps a key that does nothing (`0xE8`, which Windows leaves unassigned), and letting go
+opens nothing.
+
+A window is not dragged when it is the desktop or the taskbar, not showing, an unowned tool window,
+cloaked, full screen (covering its display without being maximized: games, videos, presentations),
+not responding, or run as administrator — Windows would refuse to move it, and by then its click
+would be gone. Nor is one whose program is on the `Skip` list. The press goes through untouched, and
+the log says why.
+
 ## Known limitations
 
 - **Elevated windows cannot be moved.** A process running as you cannot reposition a window owned
   by a process running as administrator; Windows blocks it (UIPI). Those windows are skipped and
-  counted, and a tray balloon reports how many. Running WinSwapper itself as administrator would
-  fix it, at the cost of a UAC prompt every launch.
+  counted, and a tray balloon reports how many. Dragging leaves them alone too. Running WinSwapper
+  itself as administrator would fix it, at the cost of a UAC prompt every launch.
+- **Alt+drag is WinSwapper's.** While dragging is on, a program with an Alt+drag of its own —
+  column selection in Notepad++, Visual Studio or Word, duplicating in some graphics programs,
+  orbiting in some 3D programs — no longer gets it. Add the program to `Skip`, or choose other drag
+  keys. Alt+Shift+drag and the like still reach programs.
+- **An Alt+click arrives late.** It reaches the program only when the button comes up, as a quick
+  press and release where the button came up, so an Alt+press-and-hold does nothing in the program.
+- **No snapping.** Dragging moves the window and nothing more: no Snap layouts or snapping to the
+  screen edges, which Windows keeps for dragging by the title bar.
 - **Windows owned by a hidden window are skipped.** A few applications, mostly older ones, make
   their main window *owned* by a hidden one. With nothing visible to travel with, those windows are
   left alone.
@@ -259,7 +325,8 @@ covered both.
   side of one of them.
 - **Different DPI per display.** The app is Per-Monitor-V2 aware, so coordinates are real physical
   pixels. If displays run different scaling factors, applications will re-layout their contents on
-  arrival, which the proportional mapping accounts for but cannot make invisible.
+  arrival, which the proportional mapping accounts for but cannot make invisible. A window dragged
+  across to such a display may change size as it arrives, and the pointer's grip on it shift.
 - **Settings apply when reloaded.** Editing `settings.ini` changes nothing until *Reload settings* or
   a restart; the file is not watched.
 - **Store apps are ignored together.** The windows of packaged (Microsoft Store) apps all belong to
@@ -273,8 +340,9 @@ covered both.
 ```
 src/main.cpp      WinMain, hidden window, tray icon, hotkey, menu, message loop
 src/swapper.cpp   display and window enumeration, remap arithmetic, applying moves
+src/drag.cpp      dragging: the mouse hook, which presses to take, moving the window
 src/log.cpp       log files plus console output for the command-line modes
-src/settings.cpp  settings.ini: hotkey syntax, the ignore list, reading and writing the file
+src/settings.cpp  settings.ini: hotkey and drag-key syntax, program lists, reading and writing the file
 src/tray.cpp      which icon to show, and the Start with Windows setting
 src/selftest.cpp  --selftest, with --no-windows to skip everything that opens a window
 res/app.manifest  Per-Monitor-V2 DPI awareness, common controls v6, asInvoker

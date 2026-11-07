@@ -106,6 +106,12 @@ std::wstring ProgramName(DWORD pid);
 // The ignore-list entry matching the program that owns hwnd, or empty if none does.
 std::wstring IgnoredBy(HWND hwnd, const std::vector<std::wstring>& ignore);
 
+// Shared with dragging. A cloaked window is on another virtual desktop, or is a
+// suspended packaged app: Windows keeps it out of sight. A shell class is the
+// desktop's, the taskbar's or Task View's.
+bool IsCloaked(HWND hwnd);
+bool IsShellClass(const std::wstring& cls);
+
 // Diagnostics shared with the self-test.
 std::wstring   RectStr(const RECT& r);
 const wchar_t* DirName(Rotation dir);
